@@ -1,17 +1,25 @@
 {
-  "description": "山野疾驰 Mountain Dash",
-  "compileType": "game",
-  "appid": "touristappid",
-  "projectname": "mountain-dash",
-  "libVersion": "3.5.0",
   "setting": {
-    "urlCheck": false,
-    "es6": false,
-    "enhance": false,
-    "postcss": false,
-    "minified": false,
-    "newFeature": true,
-    "checkSiteMap": false
+    "es6": true,
+    "postcss": true,
+    "minified": true,
+    "uglifyFileName": false,
+    "enhance": true,
+    "packNpmRelationList": [],
+    "babelSetting": {
+      "ignore": [],
+      "disablePlugins": [],
+      "outputPath": ""
+    },
+    "useCompilerPlugins": false
   },
-  "condition": {}
+  "compileType": "game",
+  "simulatorPluginLibVersion": {},
+  "packOptions": {
+    "ignore": [],
+    "include": []
+  },
+  "isGameTourist": false,
+  "appid": "wx9fb57924ea7d2e1c",
+  "editorSetting": {}
 }

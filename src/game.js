@@ -71,6 +71,7 @@ export class Game {
       speed: 0,
       lane: 0,
       laneX: 0,
+      follow: 0, // 手指横向拖动的跟手量 -1..1
       y: 0,
       jumpT: -1,
       fastFall: false,
@@ -102,6 +103,7 @@ export class Game {
     this.audio = new Audio();
     this.input = new Input();
     this.input.onSwipe = (dir) => this.onSwipe(dir);
+    this.input.onDrag = (k) => this.onDrag(k);
     this.input.onTap = (x, y) => this.onTap(x, y);
     this.input.onKey = (name) => this.onKey(name);
 
@@ -160,6 +162,7 @@ export class Game {
       speed: 0,
       lane: 0,
       laneX: 0,
+      follow: 0, // 手指横向拖动的跟手量 -1..1
       y: 0,
       jumpT: -1,
       fastFall: false,
@@ -226,6 +229,7 @@ export class Game {
   togglePause() {
     if (this.state !== 'running' && this.state !== 'countdown') return;
     this.paused = !this.paused;
+    this.player.follow = 0;
     if (this.paused) {
       this.hud.showPause();
       this.audio.suspend();
@@ -298,6 +302,25 @@ export class Game {
     this.audio.unlock();
     if (this.state !== 'running' || this.paused || this.autopilot) return;
     this.act(dir);
+  }
+
+  // 手指横向拖动但还没到变道的程度：跑者先跟着往那边靠
+  onDrag(k) {
+    this.player.follow = this.state === 'running' && !this.paused && !this.autopilot ? k : 0;
+  }
+
+  // 跑者此刻该去的横向位置：所在跑线 + 跟手偏移（不会被拖出山径）
+  laneTarget() {
+    const p = this.player;
+    const edge = LANE_W + 0.3;
+    return clamp(p.lane * LANE_W + p.follow * PLAYER.laneFollow * LANE_W, -edge, edge);
+  }
+
+  // 起步快、收尾稳地靠向目标位置
+  moveLane(p, target, dt) {
+    const d = target - p.laneX;
+    const v = clamp(Math.abs(d) * PLAYER.laneSnap, PLAYER.laneMinSpeed, PLAYER.laneSpeed);
+    p.laneX += clamp(d, -v * dt, v * dt);
   }
 
   act(dir) {
@@ -414,7 +437,8 @@ export class Game {
         // 冲线后慢慢减速
         p.speed = Math.max(0, p.speed - dt * (this.state === 'finished' ? 4.2 : 7));
         p.s += p.speed * dt;
-        p.laneX += clamp(p.lane * LANE_W - p.laneX, -PLAYER.laneSpeed * dt, PLAYER.laneSpeed * dt);
+        p.follow = 0;
+        this.moveLane(p, this.laneTarget(), dt);
         this.updateJump(p, dt);
         if (this.endTimer > 0) {
           this.endTimer -= dt;
@@ -532,7 +556,7 @@ export class Game {
     p.stamina -= PLAYER.staminaDrain * (1 + Math.max(0, g) * 5) * dt;
 
     // 横移 / 跳 / 滑
-    p.laneX += clamp(p.lane * LANE_W - p.laneX, -PLAYER.laneSpeed * dt, PLAYER.laneSpeed * dt);
+    this.moveLane(p, this.laneTarget(), dt);
     const landed = this.updateJump(p, dt);
     if (landed) {
       this.audio.land();
@@ -758,7 +782,7 @@ export class Game {
   animateRunners(dt) {
     const p = this.player;
     const waiting = this.state === 'title' || this.state === 'countdown';
-    const lean = clamp((p.lane * LANE_W - p.laneX) * 0.35, -0.35, 0.35);
+    const lean = clamp((this.laneTarget() - p.laneX) * 0.35, -0.35, 0.35);
     let mode = waiting ? 'ready' : 'run';
     if (this.state === 'finished') mode = p.speed > 1.5 ? 'cheer' : 'cheer';
     if (this.state === 'failed') mode = p.speed < 2 ? 'stand' : 'run';

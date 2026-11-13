@@ -9,7 +9,10 @@ export const PLAYER = {
   jumpDuration: 0.74,
   jumpHeight: 1.3,
   slideDuration: 0.78,
-  laneSpeed: 13, // 横向换线速度 m/s
+  laneSpeed: 20, // 横向换线的最高速度 m/s
+  laneSnap: 22, // 越大越跟手：横向速度 = 离目标的距离 × laneSnap，夹在 laneMinSpeed 和 laneSpeed 之间
+  laneMinSpeed: 5,
+  laneFollow: 0.42, // 手指还没滑到变道的程度时，跑者最多先朝那边靠出多少（占跑线间距的比例）
   staminaDrain: 0.65, // 每秒基础体力消耗 (%)
   hitStamina: 12, // 撞到障碍扣的体力 (%)
   hitSlow: 0.38, // 撞到障碍后速度保留比例
