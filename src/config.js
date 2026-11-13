@@ -15,14 +15,23 @@ export const PLAYER = {
   laneSnap: 22, // 越大越跟手：横向速度 = 离目标的距离 × laneSnap，夹在 laneMinSpeed 和 laneSpeed 之间
   laneMinSpeed: 5,
   laneFollow: 0.42, // 手指还没滑到变道的程度时，跑者最多先朝那边靠出多少（占跑线间距的比例）
-  staminaDrain: 0.65, // 每秒基础体力消耗 (%)
+  staminaDrain: 0.78, // 每秒基础体力消耗 (%)
   hitStamina: 12, // 撞到障碍扣的体力 (%)
   hitSlow: 0.38, // 撞到障碍后速度保留比例
   invulnerable: 1.4, // 撞后无敌时间
-  gelStamina: 34,
+  gelStamina: 30,
   gelBoost: 1.14,
   gelBoostTime: 5,
-  maxGels: 2,
+  maxGels: 3,
+  fullStamina: 8, // 道具已经拿满时再捡到，直接折算成这么多体力 (%)
+  waterStamina: 6, // 每瓶水补的体力 (%)
+  hydrationMax: 3, // 攒满这么多瓶水进入"巅峰状态"
+  peakBoost: 1.26, // 巅峰状态：加速、无敌、撞碎障碍、不掉体力
+  peakTime: 5,
+  peakGrace: 0.8, // 巅峰状态结束后的保护时间
+  burstEvery: 10, // 每连续闪避这么多次，来一小段加速
+  burstBoost: 1.09,
+  burstTime: 3,
   comboSpeedStep: 0.006, // 每次连续闪避增加的速度比例
   comboSpeedMax: 0.08,
 };
@@ -170,10 +179,14 @@ export const PLAYER_MODEL = 'player';
 export const RIVALS = [
   // model: 人物模型；color: 成绩榜 / 进度条上代表这名选手的颜色（和上衣一致）
   // curve: 相对标准配速的倍率，按赛程 0..1 线性插值
-  { name: '阿峰', model: 'afeng', color: 0x2f7fd8, lane: -1, start: 0.9, curve: [1.02, 1.03, 1.045, 1.065, 1.08, 1.09] },
-  { name: '老周', model: 'laozhou', color: 0xe9ebee, lane: 1, start: 0.9, curve: [1.04, 1.04, 1.035, 1.035, 1.03, 1.035] },
-  { name: '小野', model: 'xiaoye', color: 0xd9384f, lane: 0, start: 2.3, curve: [1.1, 1.08, 1.04, 1.0, 0.975, 0.97] },
+  // 玩家沿途能拿到能量胶 / 巅峰状态 / 连续闪避的加速，对手的配速按"会用这些加速的玩家"来定
+  { name: '阿峰', model: 'afeng', color: 0x2f7fd8, lane: -1, start: 0.9, curve: [1.075, 1.085, 1.1, 1.125, 1.14, 1.15] },
+  { name: '老周', model: 'laozhou', color: 0xe9ebee, lane: 1, start: 0.9, curve: [1.1, 1.1, 1.092, 1.092, 1.087, 1.092] },
+  { name: '小野', model: 'xiaoye', color: 0xd9384f, lane: 0, start: 2.3, curve: [1.16, 1.14, 1.097, 1.055, 1.03, 1.022] },
 ];
+
+// 补给站：每个赛段开头不远处一个，三条跑线各放一样补给，只能拿一样
+export const AID_STATIONS = STAGES.slice(1).map((st) => st.from + 70);
 
 export function stageIndexAt(s) {
   for (let i = 0; i < STAGES.length; i++) if (s < STAGES[i].to) return i;

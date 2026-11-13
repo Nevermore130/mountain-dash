@@ -157,6 +157,36 @@ export class Audio {
     this._tone({ freq: 990, dur: 0.16, gain: 0.2, type: 'triangle', delay: 0.07 });
   }
 
+  // 喝水：两声往上冒的"咕咚"
+  water() {
+    this._tone({ freq: 380, to: 620, dur: 0.09, gain: 0.22 });
+    this._tone({ freq: 460, to: 820, dur: 0.11, gain: 0.22, delay: 0.09 });
+  }
+
+  // 拿到登山杖：金属杖尖的两声脆响
+  pole() {
+    this._tone({ freq: 1560, dur: 0.07, gain: 0.14, type: 'square' });
+    this._tone({ freq: 2080, dur: 0.12, gain: 0.12, type: 'square', delay: 0.06 });
+  }
+
+  // 登山杖挡下一次碰撞
+  shield() {
+    this._tone({ freq: 1240, to: 620, dur: 0.22, gain: 0.2, type: 'square' });
+    this._burst({ freq: 1800, type: 'bandpass', q: 1.5, dur: 0.16, gain: 0.3 });
+  }
+
+  // 进入巅峰状态：一串上行音 + 起风
+  peak() {
+    [523, 659, 784, 1047, 1319].forEach((f, i) => this._tone({ freq: f, dur: 0.22, gain: 0.18, type: 'triangle', delay: i * 0.07 }));
+    this._burst({ freq: 600, type: 'bandpass', q: 0.7, dur: 0.9, gain: 0.2, sweep: 2600 });
+  }
+
+  // 巅峰状态下撞碎障碍
+  smash() {
+    this._tone({ freq: 150, to: 60, dur: 0.2, gain: 0.5 });
+    this._burst({ freq: 2200, type: 'bandpass', q: 0.6, dur: 0.28, gain: 0.4, sweep: -1500 });
+  }
+
   boost() {
     this._tone({ freq: 330, to: 880, dur: 0.35, gain: 0.18, type: 'triangle' });
     this._burst({ freq: 800, type: 'bandpass', q: 0.8, dur: 0.4, gain: 0.14, sweep: 1600 });

@@ -6,6 +6,8 @@ import { STAGES, RACE_LENGTH, RIVALS, PLAYER } from './config.js';
 
 const DW = 390;
 const ORANGE = '#ff6a13';
+const WATER = '#5cc4ff';
+const POLE = '#8fe87a';
 // 首页底部的素材署名
 const CREDITS = [
   '人物与动画：Quaternius（CC0） · 太阳镜：iPoly3D（CC0）',
@@ -73,6 +75,42 @@ function bolt(c, x, y, s, color) {
   c.lineTo(x + 0.02 * s, y - 0.1 * s);
   c.closePath();
   c.fill();
+}
+
+// 水滴（高 s）
+function drop(c, x, y, s) {
+  c.beginPath();
+  c.moveTo(x, y - s * 0.56);
+  c.bezierCurveTo(x + s * 0.12, y - s * 0.3, x + s * 0.36, y - s * 0.02, x + s * 0.36, y + s * 0.16);
+  c.bezierCurveTo(x + s * 0.36, y + s * 0.5, x - s * 0.36, y + s * 0.5, x - s * 0.36, y + s * 0.16);
+  c.bezierCurveTo(x - s * 0.36, y - s * 0.02, x - s * 0.12, y - s * 0.3, x, y - s * 0.56);
+  c.closePath();
+}
+
+// 一副交叉的登山杖（高 s）
+function crossedPoles(c, x, y, s, color) {
+  c.strokeStyle = color;
+  c.fillStyle = color;
+  c.lineCap = 'round';
+  for (const side of [-1, 1]) {
+    c.lineWidth = s * 0.09;
+    c.beginPath();
+    c.moveTo(x + side * s * 0.3, y - s * 0.5);
+    c.lineTo(x - side * s * 0.3, y + s * 0.5);
+    c.stroke();
+    // 握把
+    c.lineWidth = s * 0.17;
+    c.beginPath();
+    c.moveTo(x + side * s * 0.3, y - s * 0.5);
+    c.lineTo(x + side * s * 0.21, y - s * 0.35);
+    c.stroke();
+    // 杖尖的雪托
+    c.lineWidth = s * 0.07;
+    c.beginPath();
+    c.moveTo(x - side * s * 0.33, y + s * 0.3);
+    c.lineTo(x - side * s * 0.13, y + s * 0.42);
+    c.stroke();
+  }
 }
 
 function arrow(c, x, y, dir, s, color) {
@@ -270,7 +308,8 @@ export class Hud {
       this._topAcc = 0;
       this._drawTop(d);
     }
-    const bottomKey = `${Math.floor(d.distance)}|${d.gels}|${d.boost > 0 ? Math.ceil(d.boost * 4) : 0}|${d.stamina < 30 ? Math.floor(d.time * 3) % 2 : 0}|${d.rivals.map((r) => Math.floor(r / 8)).join(',')}`;
+    const q = (t) => (t > 0 ? Math.ceil(t * 4) : 0);
+    const bottomKey = `${Math.floor(d.distance)}|${d.gels}|${q(d.boost)}|${d.hydration}|${q(d.peak)}|${d.shield}|${q(d.burst)}|${d.stamina < 30 ? Math.floor(d.time * 3) % 2 : 0}|${d.rivals.map((r) => Math.floor(r / 8)).join(',')}`;
     if (bottomKey !== this._bottomKey) {
       this._bottomKey = bottomKey;
       this._drawBottom(d);
@@ -404,7 +443,7 @@ export class Hud {
       para(bw);
       c.fill();
       if (fill > 0.02) {
-        c.fillStyle = low ? '#ff4b3a' : d.boost > 0 ? '#ffc247' : ORANGE;
+        c.fillStyle = d.peak > 0 ? WATER : low ? '#ff4b3a' : d.boost > 0 ? '#ffc247' : ORANGE;
         para(bw * fill);
         c.fill();
       }
@@ -494,14 +533,61 @@ export class Hud {
     c.stroke();
     bolt(c, bx + 30, by + bh / 2, 26, has ? (pulse ? '#fff' : ORANGE) : 'rgba(255,255,255,0.35)');
     text(c, `能量胶 ${d.gels}/${PLAYER.maxGels}`, bx + 52, by + 20, 15, { color: has ? '#fff' : 'rgba(255,255,255,0.55)', shadow: false });
-    const sub = d.boost > 0 ? '加速中…' : has ? `点击使用 · 体力 +${PLAYER.gelStamina}%` : '沿途选线拾取';
-    text(c, sub, bx + 52, by + 38, 10, { bold: false, color: has ? (pulse ? '#fff' : '#ffc59c') : 'rgba(255,255,255,0.5)', shadow: false });
-    if (d.boost > 0) {
+    const sub = d.boost > 0 ? '加速中…' : d.burst > 0 ? '连续闪避 · 加速中…' : has ? `点击使用 · 体力 +${PLAYER.gelStamina}%` : '沿途选线拾取';
+    text(c, sub, bx + 52, by + 38, 10, { bold: false, color: has ? (pulse ? '#fff' : '#ffc59c') : d.burst > 0 ? '#ffc59c' : 'rgba(255,255,255,0.5)', shadow: false });
+    if (d.boost > 0 || d.burst > 0) {
+      const k = d.boost > 0 ? d.boost / PLAYER.gelBoostTime : d.burst / PLAYER.burstTime;
       c.fillStyle = '#ffc247';
-      rrect(c, bx + 10, by + bh - 6, (bw - 20) * Math.min(1, d.boost / PLAYER.gelBoostTime), 3, 1.5);
+      rrect(c, bx + 10, by + bh - 6, (bw - 20) * Math.min(1, k), 3, 1.5);
       c.fill();
     }
     this._gelButton = { id: 'gel', x: bx, y: by, w: bw, h: bh };
+
+    // 左边：补水进度（攒满进入巅峰状态）
+    const sw = 81;
+    const peak = d.peak > 0;
+    const lx = 16;
+    c.fillStyle = peak ? 'rgba(40,140,220,0.9)' : 'rgba(16,18,20,0.82)';
+    rrect(c, lx, by, sw, bh, 12);
+    c.fill();
+    c.strokeStyle = peak || d.hydration > 0 ? WATER : 'rgba(255,255,255,0.22)';
+    c.lineWidth = peak ? 2 : 1;
+    c.stroke();
+    if (peak) {
+      text(c, '巅峰状态', lx + sw / 2, by + 19, 14, { align: 'center', italic: true, shadow: false });
+      text(c, '无敌冲刺', lx + sw / 2, by + 36, 9.5, { align: 'center', bold: false, color: 'rgba(255,255,255,0.9)', shadow: false });
+      c.fillStyle = '#fff';
+      rrect(c, lx + 9, by + bh - 6, (sw - 18) * Math.min(1, d.peak / PLAYER.peakTime), 3, 1.5);
+      c.fill();
+    } else {
+      for (let i = 0; i < PLAYER.hydrationMax; i++) {
+        const x = lx + sw / 2 + (i - (PLAYER.hydrationMax - 1) / 2) * 21;
+        drop(c, x, by + 20, 21);
+        if (i < d.hydration) {
+          c.fillStyle = WATER;
+          c.fill();
+        } else {
+          c.fillStyle = 'rgba(255,255,255,0.08)';
+          c.fill();
+          c.strokeStyle = 'rgba(255,255,255,0.4)';
+          c.lineWidth = 1;
+          c.stroke();
+        }
+      }
+      text(c, `补水 ${d.hydration}/${PLAYER.hydrationMax}`, lx + sw / 2, by + 42, 10, { align: 'center', bold: false, color: d.hydration > 0 ? '#bfe6ff' : 'rgba(255,255,255,0.5)', shadow: false });
+    }
+
+    // 右边：登山杖（能挡一次碰撞）
+    const rx = DW - 16 - sw;
+    const shield = d.shield > 0;
+    c.fillStyle = 'rgba(16,18,20,0.82)';
+    rrect(c, rx, by, sw, bh, 12);
+    c.fill();
+    c.strokeStyle = shield ? POLE : 'rgba(255,255,255,0.22)';
+    c.lineWidth = shield ? 2 : 1;
+    c.stroke();
+    crossedPoles(c, rx + sw / 2, by + 20, 24, shield ? POLE : 'rgba(255,255,255,0.3)');
+    text(c, shield ? '可挡一次碰撞' : '登山杖', rx + sw / 2, by + 42, 10, { align: 'center', bold: false, color: shield ? '#d3ffc8' : 'rgba(255,255,255,0.5)', shadow: false });
 
     // 进度条
     const py = y0 + 124;
@@ -705,7 +791,28 @@ export class Hud {
       text(c, a, x, cy + 40, 14, { align: 'center' });
       text(c, b, x, cy + 58, 10.5, { align: 'center', bold: false, color: 'rgba(255,255,255,0.78)' });
     });
-    text(c, '撞到障碍会掉体力 · 体力耗尽即退赛 · 拾取能量胶补充', DW / 2, Hd - 176, 11, { align: 'center', bold: false, color: 'rgba(255,255,255,0.78)' });
+    // 沿途补给说明：三种补给各用自己的颜色标出来
+    const tips = [
+      ['#ffb347', '能量胶', '回体力并加速'],
+      [WATER, '水', '攒满 3 瓶无敌冲刺'],
+      [POLE, '登山杖', '挡一次碰撞'],
+    ];
+    const tipY = Hd - 172;
+    c.font = font(10.5);
+    const widths = tips.map(([, a, b]) => {
+      c.font = font(10.5);
+      const wa = c.measureText(a).width;
+      c.font = font(10.5, { bold: false });
+      return [wa, c.measureText(b).width];
+    });
+    const tipGap = 14;
+    let tx0 = (DW - widths.reduce((sum, [wa, wb]) => sum + wa + 4 + wb, 0) - tipGap * (tips.length - 1)) / 2;
+    tips.forEach(([color, a, b], i) => {
+      text(c, a, tx0, tipY, 10.5, { color });
+      text(c, b, tx0 + widths[i][0] + 4, tipY, 10.5, { bold: false, color: 'rgba(255,255,255,0.78)' });
+      tx0 += widths[i][0] + 4 + widths[i][1] + tipGap;
+    });
+    text(c, '每一局的障碍和补给都会重新随机排布 · 体力耗尽即退赛', DW / 2, Hd - 188, 10.5, { align: 'center', bold: false, color: 'rgba(255,255,255,0.78)' });
 
     const by = Hd - 152;
     let hint = '点击按钮开始 · 建议打开声音';
@@ -810,14 +917,15 @@ export class Hud {
       text(c, formatTime(r.best), rxx - 14, ty + 47, 17, { align: 'right', italic: true, color: 'rgba(255,255,255,0.85)', shadow: false });
     }
 
-    // 三项数据
+    // 四项数据
     const sy = ty + 86;
     const stats = [
-      ['平均配速', `${formatPace(r.avgSpeed)}/km`],
-      ['最高连续闪避', String(r.bestCombo)],
+      ['平均配速', formatPace(r.avgSpeed)],
+      ['最高连闪', String(r.bestCombo)],
+      ['巅峰状态', `${r.peaks || 0} 次`],
       ['撞到障碍', `${r.hits} 次`],
     ];
-    const colW = (cw - 48) / 3;
+    const colW = (cw - 48) / stats.length;
     stats.forEach(([k, v], i) => {
       const x = lx + colW * i;
       text(c, k, x + 2, sy + 10, 10.5, { bold: false, color: 'rgba(255,255,255,0.6)', shadow: false });
