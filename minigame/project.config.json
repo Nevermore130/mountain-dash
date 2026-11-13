@@ -1,0 +1,17 @@
+{
+  "description": "山野疾驰 Mountain Dash",
+  "compileType": "game",
+  "appid": "touristappid",
+  "projectname": "mountain-dash",
+  "libVersion": "3.5.0",
+  "setting": {
+    "urlCheck": false,
+    "es6": false,
+    "enhance": false,
+    "postcss": false,
+    "minified": false,
+    "newFeature": true,
+    "checkSiteMap": false
+  },
+  "condition": {}
+}

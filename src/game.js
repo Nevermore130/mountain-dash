@@ -1,0 +1,846 @@
+// 游戏主体：场景搭建、状态机、玩家与对手逻辑、跟拍相机
+import * as THREE from 'three';
+import { LANE_W, PLAYER, RACE_LENGTH, RIVALS, STAGES, clamp, lerp, stageBlend, stageIndexAt } from './config.js';
+import { cx, py, grade, heading } from './track.js';
+import { Terrain } from './terrain.js';
+import { Environment } from './sky.js';
+import { Runner } from './runner.js';
+import { ObstacleField, generateCourse, planRow, createArch, ROCK, LOG, OVER } from './obstacles.js';
+import { Hud, formatTime } from './hud.js';
+import { Input } from './input.js';
+import { Audio } from './audio.js';
+import { Dust } from './particles.js';
+import { getPropAssets } from './props.js';
+import { createCanvas, loadData, saveData, vibrate, options } from './platform.js';
+
+const CAM_BACK = 5.8;
+const CAM_UP = 2.75;
+const CAM_FOV = 66;
+
+// 标准配速：赛段基础速度 × 坡度修正
+function parSpeed(s) {
+  const base = stageBlend(s, (st) => st.speed, 80);
+  return base * clamp(1 - grade(s) * 1.1, 0.8, 1.12);
+}
+
+function nameTagTexture(name) {
+  const c = createCanvas(256, 96);
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = 'rgba(18,20,23,0.82)';
+  ctx.fillRect(8, 14, 240, 68);
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(8, 14, 240, 68);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 44px "PingFang SC", "Helvetica Neue", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(name, 128, 50);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.NoColorSpace;
+  t.generateMipmaps = false;
+  t.minFilter = THREE.LinearFilter;
+  return t;
+}
+
+export class Game {
+  constructor(renderer, screen) {
+    this.renderer = renderer;
+    this.screen = screen;
+    this.scene = new THREE.Scene();
+    this.camera = new THREE.PerspectiveCamera(CAM_FOV, screen.width / screen.height, 0.3, 2400);
+    this.camPos = new THREE.Vector3();
+    this.camLook = new THREE.Vector3();
+    this.focus = new THREE.Vector3();
+    this.shake = 0;
+    this.time = 0;
+
+    this.env = new Environment(this.scene, renderer);
+    this.terrain = new Terrain(this.scene);
+    this.obstacles = new ObstacleField(this.scene);
+    this.dust = new Dust(this.scene);
+    this.props = getPropAssets();
+
+    this.scene.add(createArch(7, 'START', '起点', 0xf2590c));
+    this.scene.add(createArch(RACE_LENGTH, 'FINISH', '终点', 0xd22b2b));
+
+    // 玩家
+    this.player = {
+      runner: new Runner({ shirt: 0xe8521c, shoe: 0xffa01e, cap: 0xece8dd, index: 0 }),
+      s: 0,
+      speed: 0,
+      lane: 0,
+      laneX: 0,
+      y: 0,
+      jumpT: -1,
+      fastFall: false,
+      slideT: 0,
+      queuedSlide: false,
+      stamina: 100,
+      gels: 0,
+      combo: 0,
+      bestCombo: 0,
+      hits: 0,
+      invuln: 0,
+      boostT: 0,
+      rowPtr: 0,
+      gelPtr: 0,
+    };
+    this.scene.add(this.player.runner.root);
+    this.player.runner.root.rotation.order = 'YXZ';
+
+    // 对手
+    this.rivals = RIVALS.map((cfg, i) => {
+      const runner = new Runner({ shirt: cfg.shirt, shoe: cfg.shoe, cap: cfg.cap, index: i + 1, phase: i * 1.7 + 1 });
+      runner.addNameTag(nameTagTexture(cfg.name), 256 / 96);
+      runner.root.rotation.order = 'YXZ';
+      this.scene.add(runner.root);
+      return { cfg, runner, s: cfg.start, speed: 0, lane: cfg.lane, laneX: cfg.lane * LANE_W, y: 0, jumpT: -1, slideT: 0, rowPtr: 0, finishTime: 0 };
+    });
+
+    this.hud = new Hud(screen);
+    this.audio = new Audio();
+    this.input = new Input();
+    this.input.onSwipe = (dir) => this.onSwipe(dir);
+    this.input.onTap = (x, y) => this.onTap(x, y);
+    this.input.onKey = (name) => this.onKey(name);
+
+    this.best = loadData('best', 0) || 0;
+    this.soundOn = loadData('sound', 1) !== 0;
+    this.audio.setEnabled(this.soundOn);
+    this.hud.soundOn = this.soundOn;
+    this.autopilot = !!options.autopilot;
+    this.tutorial = { rock: false, log: false, over: false, gel: false };
+
+    this.state = 'title';
+    this.paused = false;
+    this.raceTime = 0;
+    this.worldTime = 0; // 发令后一直在走的时钟（玩家冲线后对手还在跑）
+    this.countdown = 0;
+    this.endTimer = 0;
+    this.stage = 0;
+    this.hitFlash = 0;
+    this.stepAlt = false;
+
+    this.resize(screen);
+    this.resetRace();
+    this.toTitle();
+  }
+
+  resize(screen) {
+    this.screen = screen;
+    this.camera.aspect = screen.width / screen.height;
+    // 竖屏视野更窄：屏幕越瘦，纵向视角越大
+    this.baseFov = clamp(CAM_FOV + (0.5 - this.camera.aspect) * 30, 52, 74);
+    this.camera.fov = this.baseFov;
+    this.camera.updateProjectionMatrix();
+    this.dust.setViewport(screen.height * this.renderer.getPixelRatio(), this.camera.fov);
+    if (this.hud.W !== screen.width || this.hud.H !== screen.height) {
+      this.hud.resize(screen);
+      this.refreshScreen();
+    }
+  }
+
+  refreshScreen() {
+    if (this.state === 'title') this.hud.showTitle(this.best);
+    else if (this.paused) this.hud.showPause();
+    else if (this.result && (this.state === 'finished' || this.state === 'failed') && this.endTimer <= 0) this.hud.showResult(this.result);
+    if (this.state !== 'title') this.hud.setRaceHudVisible(true);
+  }
+
+  // ---------------- 状态切换 ----------------
+
+  resetRace() {
+    const seed = typeof options.seed === 'number' ? options.seed : (Date.now() & 0xffffff) + 1;
+    this.course = generateCourse(seed);
+    this.obstacles.reset(this.course);
+    const p = this.player;
+    Object.assign(p, {
+      s: typeof options.startAt === 'number' ? options.startAt : 0,
+      speed: 0,
+      lane: 0,
+      laneX: 0,
+      y: 0,
+      jumpT: -1,
+      fastFall: false,
+      slideT: 0,
+      queuedSlide: false,
+      stamina: 100,
+      gels: 0,
+      combo: 0,
+      bestCombo: 0,
+      hits: 0,
+      invuln: 0,
+      boostT: 0,
+      rowPtr: 0,
+      gelPtr: 0,
+    });
+    while (p.rowPtr < this.course.rows.length && this.course.rows[p.rowPtr].s < p.s + 30) p.rowPtr++;
+    while (p.gelPtr < this.course.gels.length && this.course.gels[p.gelPtr].s < p.s + 30) p.gelPtr++;
+    this.rivals.forEach((r) => {
+      Object.assign(r, { s: p.s + r.cfg.start, speed: 0, lane: r.cfg.lane, laneX: r.cfg.lane * LANE_W, y: 0, jumpT: -1, slideT: 0, rowPtr: p.rowPtr, finishTime: 0 });
+      r.runner.readyW = 1;
+      r.runner.cheerW = 0;
+    });
+    p.runner.readyW = 1;
+    p.runner.cheerW = 0;
+    p.runner.standW = 0;
+    p.runner.root.visible = true;
+    this.raceTime = 0;
+    this.worldTime = 0;
+    this.stage = stageIndexAt(p.s);
+    this.result = null;
+    this.endTimer = 0;
+    this.hitFlash = 0;
+    this.shake = 0;
+    this.terrain.rebuildAll(p.s);
+    this.snapCamera = true;
+  }
+
+  toTitle() {
+    this.state = 'title';
+    this.paused = false;
+    this.hud.setRaceHudVisible(false);
+    this.hud.clearToast();
+    this.hud.showTitle(this.best);
+  }
+
+  startCountdown() {
+    this.audio.unlock();
+    this.resetRace();
+    this.state = 'countdown';
+    this.paused = false;
+    this.countdown = 3.2;
+    this.lastCount = 4;
+    this.hud.hideScreen();
+    this.hud.setRaceHudVisible(true);
+    this.hud._topAcc = 1;
+  }
+
+  startRace() {
+    this.state = 'running';
+    this.hud.toast('GO!', '滑动屏幕控制跑者', { size: 64, color: '#ff8a2b', duration: 1.1 });
+    this.audio.beep(true);
+  }
+
+  togglePause() {
+    if (this.state !== 'running' && this.state !== 'countdown') return;
+    this.paused = !this.paused;
+    if (this.paused) {
+      this.hud.showPause();
+      this.audio.suspend();
+    } else {
+      this.hud.hideScreen();
+      this.audio.resume();
+    }
+  }
+
+  onHide() {
+    if ((this.state === 'running' || this.state === 'countdown') && !this.paused) this.togglePause();
+    else this.audio.suspend();
+  }
+
+  onShow() {
+    if (!this.paused) this.audio.resume();
+  }
+
+  finishRace() {
+    const p = this.player;
+    this.state = 'finished';
+    this.endTimer = 2.4;
+    const ahead = this.rivals.filter((r) => r.finishTime > 0).length;
+    const rank = ahead + 1;
+    // 调试用的自动驾驶成绩不记入个人最佳
+    const isRecord = !this.autopilot && (!this.best || this.raceTime < this.best);
+    if (isRecord) {
+      this.best = this.raceTime;
+      saveData('best', this.best);
+    }
+    this.finalRank = rank;
+    this.result = { finished: true, time: this.raceTime, rank, total: this.rivals.length + 1, avgSpeed: RACE_LENGTH / this.raceTime, bestCombo: p.bestCombo, hits: p.hits, distance: RACE_LENGTH, stage: STAGES.length - 1, best: this.best, isRecord };
+    this.hud.toast(rank === 1 ? '冲线！第 1 名' : `冲线！第 ${rank} 名`, formatTime(this.raceTime), { size: 36, color: '#ffc247', duration: 2.3 });
+    this.audio.finish();
+    vibrate(true);
+  }
+
+  failRace() {
+    const p = this.player;
+    this.state = 'failed';
+    this.endTimer = 2.0;
+    this.result = { finished: false, time: this.raceTime, rank: 0, total: this.rivals.length + 1, avgSpeed: p.s / Math.max(1, this.raceTime), bestCombo: p.bestCombo, hits: p.hits, distance: p.s, stage: this.stage, best: this.best, isRecord: false };
+    this.hud.toast('体力耗尽', '跑不动了…', { size: 40, color: '#ff6b5a', duration: 1.9 });
+    this.audio.fail();
+    vibrate(true);
+  }
+
+  buildStandings() {
+    const p = this.player;
+    const rows = this.rivals.map((r) => ({
+      name: r.cfg.name,
+      me: false,
+      color: '#' + r.cfg.shirt.toString(16).padStart(6, '0'),
+      time: r.finishTime > 0 ? r.finishTime : Infinity,
+      s: r.s,
+    }));
+    rows.push({ name: '你', me: true, color: '#e8521c', time: this.result.finished ? this.raceTime : Infinity, s: this.result.finished ? p.s : this.result.distance });
+    rows.sort((a, b) => (a.time !== b.time ? a.time - b.time : b.s - a.s));
+    rows.forEach((row) => {
+      if (row.time < Infinity) row.text = formatTime(row.time);
+      else if (row.me) row.text = `未完赛 · ${Math.floor(row.s)} m`;
+      else row.text = `还在路上 · ${Math.floor(Math.min(RACE_LENGTH, row.s))} m`;
+    });
+    return rows;
+  }
+
+  // ---------------- 输入 ----------------
+
+  onSwipe(dir) {
+    this.audio.unlock();
+    if (this.state !== 'running' || this.paused || this.autopilot) return;
+    this.act(dir);
+  }
+
+  act(dir) {
+    const p = this.player;
+    if (dir === 'left' || dir === 'right') {
+      const next = clamp(p.lane + (dir === 'left' ? -1 : 1), -1, 1);
+      if (next !== p.lane) {
+        p.lane = next;
+        this.audio.lane();
+      }
+    } else if (dir === 'up') {
+      if (p.jumpT < 0) {
+        p.jumpT = 0;
+        p.fastFall = false;
+        p.slideT = 0;
+        p.queuedSlide = false;
+        this.audio.jump();
+      }
+    } else if (dir === 'down') {
+      if (p.jumpT >= 0) {
+        // 空中下滑：快速落地并接滑铲
+        p.fastFall = true;
+        p.queuedSlide = true;
+      } else {
+        p.slideT = PLAYER.slideDuration;
+        this.audio.slide();
+      }
+    }
+  }
+
+  onTap(x, y) {
+    this.audio.unlock();
+    const id = this.hud.hitTest(x, y);
+    if (id) this.press(id);
+  }
+
+  onKey(name) {
+    this.audio.unlock();
+    if (name === 'gel') this.press('gel');
+    else if (name === 'pause') {
+      if (this.state === 'running' || this.state === 'countdown') this.togglePause();
+    } else if (name === 'confirm') {
+      if (this.state === 'title') this.press('start');
+      else if (this.paused) this.press('resume');
+      else if (this.hud.screenMode === 'result') this.press('restart');
+    }
+  }
+
+  press(id) {
+    switch (id) {
+      case 'start':
+      case 'restart':
+        this.startCountdown();
+        break;
+      case 'home':
+        this.resetRace();
+        this.toTitle();
+        break;
+      case 'resume':
+        if (this.paused) this.togglePause();
+        break;
+      case 'pause':
+        this.togglePause();
+        break;
+      case 'sound':
+        this.soundOn = !this.soundOn;
+        this.hud.soundOn = this.soundOn;
+        this.audio.setEnabled(this.soundOn);
+        saveData('sound', this.soundOn ? 1 : 0);
+        this.hud._topAcc = 1;
+        break;
+      case 'gel':
+        this.useGel();
+        break;
+    }
+  }
+
+  useGel() {
+    const p = this.player;
+    if (this.state !== 'running' || this.paused || p.gels <= 0) return;
+    p.gels--;
+    p.stamina = Math.min(100, p.stamina + PLAYER.gelStamina);
+    p.boostT = PLAYER.gelBoostTime;
+    this.hud.toast('能量胶！', `体力 +${PLAYER.gelStamina}% · 加速 ${PLAYER.gelBoostTime} 秒`, { color: '#ffc247' });
+    this.audio.boost();
+    vibrate(false);
+  }
+
+  // ---------------- 每帧更新 ----------------
+
+  update(dt) {
+    this.time += dt;
+    const p = this.player;
+    const hud = this.hud;
+
+    if (!this.paused) {
+      if (this.state === 'countdown') {
+        this.countdown -= dt;
+        const n = Math.ceil(this.countdown);
+        if (n !== this.lastCount && n >= 1 && n <= 3) {
+          this.lastCount = n;
+          hud.toast(String(n), n === 3 ? '各就各位' : n === 2 ? '预备' : '', { size: 110, duration: 0.95 });
+          this.audio.beep(false);
+        }
+        if (this.countdown <= 0) this.startRace();
+      }
+
+      if (this.state === 'running' || this.state === 'finished' || this.state === 'failed') this.worldTime += dt;
+      if (this.state === 'running') {
+        this.raceTime += dt;
+        if (this.autopilot) this.autoDrive();
+        this.updatePlayer(dt);
+      } else if (this.state === 'finished' || this.state === 'failed') {
+        // 冲线后慢慢减速
+        p.speed = Math.max(0, p.speed - dt * (this.state === 'finished' ? 4.2 : 7));
+        p.s += p.speed * dt;
+        p.laneX += clamp(p.lane * LANE_W - p.laneX, -PLAYER.laneSpeed * dt, PLAYER.laneSpeed * dt);
+        this.updateJump(p, dt);
+        if (this.endTimer > 0) {
+          this.endTimer -= dt;
+          if (this.endTimer <= 0) {
+            this.result.standings = this.buildStandings();
+            hud.setRaceHudVisible(false);
+            hud.showResult(this.result);
+          }
+        }
+      }
+
+      if (this.state !== 'title') this.updateRivals(dt);
+      this.animateRunners(dt);
+      this.dust.update(dt);
+      this.props.windUniform.value = this.time;
+    }
+
+    // 世界跟随
+    this.terrain.update(p.s, 1);
+    this.obstacles.update(p.s, this.time);
+    this.updateCamera(dt);
+    this.focus.set(cx(p.s + 8), py(p.s + 8), -(p.s + 8));
+    this.env.update(this.paused ? 0 : dt, p.s, this.focus, this.camera);
+    this.terrain.setFogDensity(this.scene.fog.density);
+    this.dust.setTint(this.env.fogColor, this.env.sunColor);
+
+    // HUD
+    if (this.state !== 'title') {
+      const d = this.hudData();
+      hud.updateRace(dt, d);
+    } else {
+      hud.updateToastOnly(dt);
+    }
+    this.hitFlash = Math.max(0, this.hitFlash - dt * 1.8);
+    const low = this.state === 'running' && p.stamina < 30 ? (0.3 + 0.2 * Math.sin(this.time * 6)) * (1 - p.stamina / 30) : 0;
+    if (this.hitFlash > 0.01 || low > 0.01) hud.setVignette(Math.max(this.hitFlash * 0.75, low), 0.85, 0.06, 0.02);
+    else if (p.boostT > 0) hud.setVignette(0.22, 1.0, 0.55, 0.1);
+    else hud.setVignette(0, 0, 0, 0);
+
+    this.audio.setSpeed(this.state === 'title' || this.paused ? 0.1 : clamp(p.speed / 15, 0, 1));
+  }
+
+  hudData() {
+    const p = this.player;
+    let rank = 1;
+    let aheadGap = Infinity;
+    let behindGap = Infinity;
+    for (const r of this.rivals) {
+      const gap = r.s - p.s;
+      if (gap > 0) {
+        rank++;
+        aheadGap = Math.min(aheadGap, gap);
+      } else behindGap = Math.min(behindGap, -gap);
+    }
+    if (this.state === 'finished') rank = this.finalRank;
+    let gapText;
+    if (this.state === 'finished') gapText = '已完赛';
+    else if (rank === 1) gapText = behindGap < Infinity ? `领先 ${Math.max(1, Math.round(behindGap))}m` : '领先';
+    else gapText = `距前方 ${Math.max(1, Math.round(aheadGap))}m`;
+    return {
+      time: this.raceTime,
+      speed: p.speed,
+      stamina: p.stamina,
+      rank,
+      total: this.rivals.length + 1,
+      gapText,
+      stage: this.stage,
+      combo: p.combo,
+      gels: p.gels,
+      boost: p.boostT,
+      distance: Math.max(0, p.s),
+      rivals: this.rivals.map((r) => r.s),
+    };
+  }
+
+  updateJump(o, dt) {
+    if (o.jumpT < 0) return false;
+    if (o.fastFall) {
+      o.y -= 16 * dt;
+      if (o.y <= 0) {
+        o.y = 0;
+        o.jumpT = -1;
+        o.fastFall = false;
+        return true;
+      }
+      return false;
+    }
+    o.jumpT += dt;
+    const t = o.jumpT / PLAYER.jumpDuration;
+    if (t >= 1) {
+      o.y = 0;
+      o.jumpT = -1;
+      return true;
+    }
+    o.y = PLAYER.jumpHeight * 4 * t * (1 - t);
+    return false;
+  }
+
+  updatePlayer(dt) {
+    const p = this.player;
+    const g = grade(p.s);
+
+    // 速度
+    const comboBonus = Math.min(PLAYER.comboSpeedMax, p.combo * PLAYER.comboSpeedStep);
+    const staminaK = p.stamina >= 30 ? 1 : 0.78 + 0.22 * (p.stamina / 30);
+    const boost = p.boostT > 0 ? PLAYER.gelBoost : 1;
+    const target = parSpeed(p.s) * (1 + comboBonus) * staminaK * boost;
+    if (p.speed < target) p.speed = Math.min(target, p.speed + 5 * dt);
+    else p.speed = Math.max(target, p.speed - 6 * dt);
+    p.s += p.speed * dt;
+    p.boostT = Math.max(0, p.boostT - dt);
+    p.invuln = Math.max(0, p.invuln - dt);
+
+    // 体力：上坡消耗更快
+    p.stamina -= PLAYER.staminaDrain * (1 + Math.max(0, g) * 5) * dt;
+
+    // 横移 / 跳 / 滑
+    p.laneX += clamp(p.lane * LANE_W - p.laneX, -PLAYER.laneSpeed * dt, PLAYER.laneSpeed * dt);
+    const landed = this.updateJump(p, dt);
+    if (landed) {
+      this.audio.land();
+      this.dust.emit(cx(p.s) + p.laneX, py(p.s) + 0.05, -p.s, 7, 0.5, 1.3);
+      if (p.queuedSlide) {
+        p.queuedSlide = false;
+        p.slideT = PLAYER.slideDuration * 0.8;
+        this.audio.slide();
+      }
+    }
+    if (p.slideT > 0) {
+      p.slideT -= dt;
+      if (Math.random() < dt * 30) this.dust.emit(cx(p.s) + p.laneX, py(p.s) + 0.05, -p.s + 0.3, 1, 0.5, 0.8);
+    }
+
+    // 赛段切换
+    const si = stageIndexAt(p.s);
+    if (si !== this.stage && p.s < RACE_LENGTH) {
+      this.stage = si;
+      this.hud.toast(STAGES[si].name, si === STAGES.length - 1 ? '最后一段，全力冲刺！' : `第 ${si + 1} 赛段`, { tag: `0${si + 1} / 0${STAGES.length}`, size: 34, duration: 2.0 });
+      this.audio.stage();
+    }
+
+    this.checkCollisions();
+    this.checkGels();
+    this.tutorialHints();
+
+    if (p.s >= RACE_LENGTH) {
+      this.finishRace();
+      return;
+    }
+    if (p.stamina <= 0) {
+      p.stamina = 0;
+      this.failRace();
+    }
+  }
+
+  checkCollisions() {
+    const p = this.player;
+    const rows = this.course.rows;
+    while (p.rowPtr < rows.length && rows[p.rowPtr].s < p.s - 1.0) {
+      const row = rows[p.rowPtr++];
+      if (!row.hit && !row.skipped) this.onRowPassed(row);
+    }
+    for (let i = p.rowPtr; i < rows.length; i++) {
+      const row = rows[i];
+      const ds = row.s - p.s;
+      if (ds > 1.2) break;
+      if (row.hit) continue;
+      if (p.invuln > 0) {
+        row.skipped = true;
+        continue;
+      }
+      let hit = 0;
+      for (let l = 0; l < 3 && !hit; l++) {
+        const cell = row.cells[l];
+        if (!cell) continue;
+        const dx = Math.abs(p.laneX - (l - 1) * LANE_W);
+        if (cell === ROCK) {
+          if (Math.abs(ds) < 0.75 && dx < 0.95) hit = ROCK;
+        } else if (cell === LOG) {
+          if (Math.abs(ds) < 0.42 && dx < 1.0 && p.y < 0.42) hit = LOG;
+        } else if (cell === OVER) {
+          if (Math.abs(ds) < 0.36 && !(p.slideT > 0 && p.y < 0.3)) hit = OVER;
+        }
+      }
+      if (hit) {
+        row.hit = true;
+        this.onHit(hit);
+      }
+    }
+  }
+
+  onRowPassed(row) {
+    const p = this.player;
+    p.combo++;
+    p.bestCombo = Math.max(p.bestCombo, p.combo);
+    if (p.combo === 5 || p.combo === 10 || (p.combo >= 20 && p.combo % 10 === 0)) {
+      this.hud.toast(p.combo >= 20 ? '行云流水！' : p.combo >= 10 ? '节奏真稳！' : '漂亮！', `连续闪避 ×${p.combo}`, { color: '#ffd9bf', duration: 1.1 });
+    }
+  }
+
+  onHit(kind) {
+    const p = this.player;
+    p.hits++;
+    p.combo = 0;
+    p.speed *= PLAYER.hitSlow;
+    p.stamina -= PLAYER.hitStamina;
+    p.invuln = PLAYER.invulnerable;
+    p.boostT = 0;
+    p.runner.hit();
+    this.shake = 1;
+    this.hitFlash = 1;
+    this.audio.hit();
+    vibrate(true);
+    this.dust.emit(cx(p.s) + p.laneX, py(p.s) + 0.6, -p.s - 0.5, 14, 0.9, 2);
+    const msg = kind === ROCK ? '撞上落石！' : kind === LOG ? '被倒木绊倒！' : '撞到树干！';
+    const tip = kind === ROCK ? '左右滑动变道绕开' : kind === LOG ? '上滑跳过去' : '下滑从底下钻过';
+    this.hud.toast(msg, `体力 -${PLAYER.hitStamina}% · ${tip}`, { color: '#ff6b5a', duration: 1.3 });
+  }
+
+  checkGels() {
+    const p = this.player;
+    const gels = this.course.gels;
+    while (p.gelPtr < gels.length && gels[p.gelPtr].s < p.s - 1.2) p.gelPtr++;
+    for (let i = p.gelPtr; i < gels.length; i++) {
+      const gel = gels[i];
+      if (gel.s - p.s > 1.2) break;
+      if (gel.taken) continue;
+      if (Math.abs(p.laneX - gel.lane * LANE_W) > 0.9) continue;
+      const rel = gel.y - p.y;
+      if (rel < -0.3 || rel > 1.75) continue;
+      this.obstacles.takeGel(gel);
+      this.audio.gel();
+      if (p.gels < PLAYER.maxGels) {
+        p.gels++;
+        this.hud.toast('拿到能量胶', `点击下方按钮使用（${p.gels}/${PLAYER.maxGels}）`, { color: '#ffc247', duration: 1.1 });
+      } else {
+        // 背包满了就直接吃掉，补一点体力
+        p.stamina = Math.min(100, p.stamina + 8);
+        this.hud.toast('体力 +8%', '能量胶已满，直接补给', { color: '#ffc247', duration: 1.0 });
+      }
+    }
+  }
+
+  // 第一次遇到每种障碍时提前给出操作提示
+  tutorialHints() {
+    const p = this.player;
+    const rows = this.course.rows;
+    const row = rows[p.rowPtr];
+    if (!row || this.autopilot) return;
+    const ds = row.s - p.s;
+    if (ds > p.speed * 1.7 || ds < p.speed * 0.9) return;
+    const t = this.tutorial;
+    const hasRock = row.cells.indexOf(ROCK) >= 0;
+    if (row.cells[0] === OVER && !t.over) {
+      t.over = true;
+      this.hud.toast('↓ 下滑', '从横倒的树干下面滑铲钻过', { size: 40, duration: 1.5 });
+    } else if (row.cells.indexOf(LOG) >= 0 && !hasRock && !t.log) {
+      t.log = true;
+      this.hud.toast('↑ 上滑', '跳过倒木', { size: 40, duration: 1.5 });
+    } else if (hasRock && !t.rock) {
+      t.rock = true;
+      this.hud.toast('← 左右滑动 →', '变道绕开落石', { size: 34, duration: 1.5 });
+    }
+  }
+
+  // 调试用自动驾驶：和对手共用同一套避障决策
+  autoDrive() {
+    const p = this.player;
+    const row = this.course.rows[p.rowPtr];
+    if (p.stamina < 55 && p.gels > 0) this.useGel();
+    if (!row) return;
+    const ds = row.s - p.s;
+    if (ds > p.speed * 0.95) {
+      // 顺路去捡能量胶
+      const gel = this.course.gels[p.gelPtr];
+      if (gel && !gel.taken && gel.s - p.s < p.speed * 1.2 && gel.s < row.s - 3 && gel.lane !== p.lane) this.act(gel.lane < p.lane ? 'left' : 'right');
+      return;
+    }
+    const plan = planRow(row, p.lane);
+    if (plan.lane !== p.lane) this.act(plan.lane < p.lane ? 'left' : 'right');
+    else if (plan.action === 'jump' && ds < p.speed * PLAYER.jumpDuration * 0.5 + 0.2 && p.jumpT < 0) this.act('up');
+    else if (plan.action === 'slide' && ds < p.speed * 0.3 + 0.4 && p.slideT <= 0) this.act('down');
+  }
+
+  updateRivals(dt) {
+    const p = this.player;
+    const rows = this.course.rows;
+    const racing = this.state !== 'countdown';
+    this.rivals.forEach((r, i) => {
+      if (!racing) return;
+      if (r.finishTime > 0) {
+        r.speed = Math.max(0, r.speed - 4 * dt);
+      } else {
+        const prog = clamp(r.s / RACE_LENGTH, 0, 1) * (r.cfg.curve.length - 1);
+        const ci = Math.min(r.cfg.curve.length - 2, Math.floor(prog));
+        const k = lerp(r.cfg.curve[ci], r.cfg.curve[ci + 1], prog - ci);
+        const target = parSpeed(r.s) * k * (1 + 0.012 * Math.sin(this.time * 0.37 + i * 2.1));
+        r.speed = r.speed < target ? Math.min(target, r.speed + 4.6 * dt) : Math.max(target, r.speed - 4 * dt);
+      }
+      r.s += r.speed * dt;
+      if (!r.finishTime && r.s >= RACE_LENGTH) r.finishTime = this.worldTime;
+
+      // 避障
+      while (r.rowPtr < rows.length && rows[r.rowPtr].s < r.s - 0.5) r.rowPtr++;
+      const row = rows[r.rowPtr];
+      let wantLane = r.cfg.lane;
+      const ds = row ? row.s - r.s : Infinity;
+      if (row && ds < r.speed * 1.0) {
+        // 身边有别的跑者时，尽量不往他那条线上挤
+        let avoid = Math.abs(p.s - r.s) < 3.5 ? p.lane : null;
+        for (const o of this.rivals) if (o !== r && Math.abs(o.s - r.s) < 2.5) avoid = o.lane;
+        if (avoid === r.lane) avoid = null;
+        const plan = planRow(row, r.lane, avoid);
+        wantLane = plan.lane;
+        if (plan.lane === r.lane) {
+          if (plan.action === 'jump' && r.jumpT < 0 && ds < r.speed * PLAYER.jumpDuration * 0.5 + 0.2) r.jumpT = 0;
+          if (plan.action === 'slide' && r.slideT <= 0 && ds < r.speed * 0.3 + 0.4) r.slideT = PLAYER.slideDuration;
+        }
+      } else {
+        // 空旷路段：玩家从身后贴上来就让出跑线
+        const gap = r.s - p.s;
+        if (gap > -1.5 && gap < 6 && p.lane === wantLane) wantLane = wantLane === 0 ? (i % 2 ? 1 : -1) : 0;
+        // 避免和别的对手叠在一起
+        for (const o of this.rivals) {
+          if (o !== r && Math.abs(o.s - r.s) < 2.2 && o.lane === wantLane && o.s > r.s) wantLane = r.lane !== o.lane ? r.lane : wantLane;
+        }
+      }
+      r.lane = wantLane;
+      r.laneX += clamp(r.lane * LANE_W - r.laneX, -9 * dt, 9 * dt);
+      this.updateJump(r, dt);
+      if (r.slideT > 0) r.slideT -= dt;
+    });
+  }
+
+  place(runner, s, laneX, y, tilt) {
+    runner.root.position.set(cx(s) + laneX, py(s) + y, -s);
+    runner.root.rotation.y = heading(s);
+    runner.root.rotation.x = Math.atan(grade(s)) * tilt;
+  }
+
+  animateRunners(dt) {
+    const p = this.player;
+    const waiting = this.state === 'title' || this.state === 'countdown';
+    const lean = clamp((p.lane * LANE_W - p.laneX) * 0.35, -0.35, 0.35);
+    let mode = waiting ? 'ready' : 'run';
+    if (this.state === 'finished') mode = p.speed > 1.5 ? 'cheer' : 'cheer';
+    if (this.state === 'failed') mode = p.speed < 2 ? 'stand' : 'run';
+    p.runner.animate(dt, { mode, speed: p.speed, airborne: p.jumpT >= 0, sliding: p.slideT > 0 && p.jumpT < 0, lean });
+    this.place(p.runner, p.s, p.laneX, p.y, p.slideT > 0 ? 0.9 : 0.5);
+    // 撞击后的无敌时间里闪烁
+    p.runner.root.visible = p.invuln <= 0 || Math.floor(this.time * 14) % 2 === 0;
+    if (p.runner.footDown && this.state === 'running') {
+      this.stepAlt = !this.stepAlt;
+      this.audio.step(this.stepAlt);
+      this.dust.emit(cx(p.s) + p.laneX, py(p.s) + 0.03, -p.s + 0.2, 2, 0.25, 0.7);
+    }
+    for (const r of this.rivals) {
+      const rl = clamp((r.lane * LANE_W - r.laneX) * 0.35, -0.3, 0.3);
+      const rmode = waiting ? 'ready' : r.finishTime > 0 ? (r.speed > 0.5 ? 'cheer' : 'stand') : 'run';
+      r.runner.animate(dt, { mode: rmode, speed: r.speed, airborne: r.jumpT >= 0, sliding: r.slideT > 0 && r.jumpT < 0, lean: rl });
+      this.place(r.runner, r.s, r.laneX, r.y, r.slideT > 0 ? 0.9 : 0.5);
+      // 离得很远的对手不必画
+      r.runner.root.visible = r.s - p.s < 260 && r.s - p.s > -30;
+      if (r.runner.footDown && Math.abs(r.s - p.s) < 25) this.dust.emit(cx(r.s) + r.laneX, py(r.s) + 0.03, -r.s + 0.2, 1, 0.25, 0.6);
+    }
+  }
+
+  updateCamera(dt) {
+    const p = this.player;
+    const cam = this.camera;
+    let back = CAM_BACK;
+    let up = CAM_UP;
+    let lookAhead = 15;
+    let side = 0;
+    if (this.state === 'title') {
+      // 首页：镜头在起跑线后方缓慢摇移
+      const t = this.time * 0.22;
+      back = 7.2 + Math.sin(t) * 0.6;
+      up = 2.5 + Math.sin(t * 0.7) * 0.25;
+      side = Math.sin(t * 0.9) * 1.6;
+      lookAhead = 14;
+    }
+    const sc = p.s - back;
+    const tx = cx(sc) + p.laneX * 0.6 + side;
+    const ty = py(sc) + up + p.y * 0.22 - (p.slideT > 0 ? 0.25 : 0);
+    const tz = -sc;
+    const sl = p.s + lookAhead;
+    const lx = cx(sl) + p.laneX * 0.3;
+    const ly = py(sl) + 1.7;
+    const lz = -sl;
+    if (this.snapCamera) {
+      this.camPos.set(tx, ty, tz);
+      this.camLook.set(lx, ly, lz);
+      this.snapCamera = false;
+    } else {
+      const k = 1 - Math.exp(-dt * 9);
+      this.camPos.x += (tx - this.camPos.x) * k;
+      this.camPos.y += (ty - this.camPos.y) * k;
+      this.camPos.z = tz;
+      this.camLook.x += (lx - this.camLook.x) * k;
+      this.camLook.y += (ly - this.camLook.y) * k;
+      this.camLook.z = lz;
+    }
+    cam.position.copy(this.camPos);
+    if (this.shake > 0) {
+      this.shake = Math.max(0, this.shake - dt * 2.6);
+      const a = this.shake * this.shake * 0.28;
+      cam.position.x += Math.sin(this.time * 71) * a;
+      cam.position.y += Math.cos(this.time * 83) * a;
+    }
+    cam.lookAt(this.camLook);
+    // 加速时略微拉大视角，增强速度感
+    const speedK = clamp((p.speed - 9) / 8, 0, 1);
+    const fov = this.baseFov + speedK * 4 + (p.boostT > 0 ? 5 : 0);
+    if (Math.abs(fov - cam.fov) > 0.02) {
+      cam.fov += (fov - cam.fov) * Math.min(1, dt * 4);
+      cam.updateProjectionMatrix();
+    }
+  }
+
+  render() {
+    const r = this.renderer;
+    r.autoClear = true;
+    r.render(this.scene, this.camera);
+    r.autoClear = false;
+    r.clearDepth();
+    r.render(this.hud.scene, this.hud.camera);
+  }
+}

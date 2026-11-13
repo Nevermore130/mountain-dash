@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <title>山野疾驰 Mountain Dash · 预览</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #101214;
+        overflow: hidden;
+        font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif;
+        -webkit-user-select: none;
+        user-select: none;
+        touch-action: none;
+      }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      #stage {
+        position: relative;
+        width: 100vw;
+        height: 100vh;
+        height: 100dvh;
+        overflow: hidden;
+        background: #000;
+      }
+      /* 桌面端：居中显示一块手机比例的画面 */
+      #stage.framed {
+        height: min(96vh, 900px);
+        width: calc(min(96vh, 900px) * 390 / 844);
+        border-radius: 28px;
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.08);
+      }
+      #game {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      #tips {
+        position: fixed;
+        left: 24px;
+        bottom: 20px;
+        color: #7d858c;
+        font-size: 12px;
+        line-height: 1.7;
+      }
+      #tips b {
+        color: #c8cdd2;
+        font-weight: 600;
+      }
+      @media (max-width: 720px) {
+        #tips {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage"><canvas id="game"></canvas></div>
+    <div id="tips">
+      <b>浏览器预览</b>（正式运行环境是微信小游戏）<br />
+      <b>← →</b> 变道　<b>↑ / 空格</b> 跳跃　<b>↓</b> 滑铲　<b>E</b> 能量胶　<b>P</b> 暂停<br />
+      也可以用鼠标在画面上拖动来模拟滑动
+    </div>
+    <script>
+      // 宽屏时给画面套一个手机比例的框
+      if (window.innerWidth > 720 && !/[?&]full/.test(location.search)) {
+        document.getElementById('stage').classList.add('framed');
+      }
+    </script>
+    <script src="./wx-shim.js"></script>
+    <script src="../minigame/game.js"></script>
+  </body>
+</html>

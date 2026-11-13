@@ -1,0 +1,18 @@
+{
+  "name": "mountain-dash",
+  "version": "0.1.0",
+  "private": true,
+  "description": "山野疾驰 - 写实风越野跑酷微信小游戏",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:dev": "node scripts/build.mjs --dev",
+    "watch": "node scripts/build.mjs --dev --watch",
+    "preview": "node scripts/serve.mjs",
+    "dev": "node scripts/build.mjs --dev --watch --serve"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "three": "0.160.1"
+  }
+}
