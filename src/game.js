@@ -1,10 +1,10 @@
 // 游戏主体：场景搭建、状态机、玩家与对手逻辑、跟拍相机
 import * as THREE from 'three';
-import { LANE_W, PLAYER, RACE_LENGTH, RIVALS, STAGES, clamp, lerp, stageBlend, stageIndexAt } from './config.js';
+import { LANE_W, PLAYER, PLAYER_MODEL, RACE_LENGTH, RIVALS, STAGES, clamp, lerp, stageBlend, stageIndexAt } from './config.js';
 import { cx, py, grade, heading } from './track.js';
 import { Terrain } from './terrain.js';
 import { Environment } from './sky.js';
-import { Runner } from './runner.js';
+import { Runner, loadRunnerLibrary, setupSkinning } from './runner.js';
 import { ObstacleField, generateCourse, planRow, createArch, ROCK, LOG, OVER } from './obstacles.js';
 import { Hud, formatTime } from './hud.js';
 import { Input } from './input.js';
@@ -64,9 +64,9 @@ export class Game {
     this.scene.add(createArch(7, 'START', '起点', 0xf2590c));
     this.scene.add(createArch(RACE_LENGTH, 'FINISH', '终点', 0xd22b2b));
 
-    // 玩家
+    // 玩家（runner 是人物模型，素材加载完才有）
     this.player = {
-      runner: new Runner({ shirt: 0xe8521c, shoe: 0xffa01e, cap: 0xece8dd, index: 0 }),
+      runner: null,
       s: 0,
       speed: 0,
       lane: 0,
@@ -76,6 +76,7 @@ export class Game {
       jumpT: -1,
       fastFall: false,
       slideT: 0,
+      slideDur: PLAYER.slideDuration, // 这一次滑铲的总时长
       queuedSlide: false,
       stamina: 100,
       gels: 0,
@@ -87,17 +88,9 @@ export class Game {
       rowPtr: 0,
       gelPtr: 0,
     };
-    this.scene.add(this.player.runner.root);
-    this.player.runner.root.rotation.order = 'YXZ';
 
     // 对手
-    this.rivals = RIVALS.map((cfg, i) => {
-      const runner = new Runner({ shirt: cfg.shirt, shoe: cfg.shoe, cap: cfg.cap, index: i + 1, phase: i * 1.7 + 1 });
-      runner.addNameTag(nameTagTexture(cfg.name), 256 / 96);
-      runner.root.rotation.order = 'YXZ';
-      this.scene.add(runner.root);
-      return { cfg, runner, s: cfg.start, speed: 0, lane: cfg.lane, laneX: cfg.lane * LANE_W, y: 0, jumpT: -1, slideT: 0, rowPtr: 0, finishTime: 0 };
-    });
+    this.rivals = RIVALS.map((cfg) => ({ cfg, runner: null, s: cfg.start, speed: 0, lane: cfg.lane, laneX: cfg.lane * LANE_W, y: 0, jumpT: -1, slideT: 0, rowPtr: 0, finishTime: 0 }));
 
     this.hud = new Hud(screen);
     this.audio = new Audio();
@@ -112,6 +105,10 @@ export class Game {
     this.audio.setEnabled(this.soundOn);
     this.hud.soundOn = this.soundOn;
     this.autopilot = !!options.autopilot;
+
+    // 人物素材是异步加载的：'loading' 加载中 | 'ready' | 'error'。没到 ready 之前不能开始比赛
+    this.assets = 'loading';
+    setupSkinning(renderer);
     this.tutorial = { rock: false, log: false, over: false, gel: false };
 
     this.state = 'title';
@@ -123,10 +120,12 @@ export class Game {
     this.stage = 0;
     this.hitFlash = 0;
     this.stepAlt = false;
+    this.frame = 0;
 
     this.resize(screen);
     this.resetRace();
     this.toTitle();
+    this.loadRunners();
   }
 
   resize(screen) {
@@ -150,6 +149,35 @@ export class Game {
     if (this.state !== 'title') this.hud.setRaceHudVisible(true);
   }
 
+  // ---------------- 人物素材 ----------------
+
+  loadRunners() {
+    this.assets = 'loading';
+    if (this.state === 'title') this.hud.showTitle(this.best, this.assets);
+    loadRunnerLibrary([PLAYER_MODEL, ...RIVALS.map((cfg) => cfg.model)])
+      .then((lib) => {
+        const make = (holder, model, phase, name) => {
+          const r = new Runner(lib, model, { phase });
+          r.root.rotation.order = 'YXZ';
+          if (name) r.addNameTag(nameTagTexture(name), 256 / 96);
+          this.scene.add(r.root);
+          holder.runner = r;
+        };
+        make(this.player, PLAYER_MODEL, 0, null);
+        this.rivals.forEach((r, i) => make(r, r.cfg.model, (i + 1) * 0.27, r.cfg.name));
+        this.assets = 'ready';
+        this.animateRunners(0);
+      })
+      .catch((err) => {
+        // 读不到文件 / 解析失败：场景照常显示，首页给出提示和重试按钮
+        console.error('[mountain-dash] 人物素材加载失败', err);
+        this.assets = 'error';
+      })
+      .then(() => {
+        if (this.state === 'title') this.hud.showTitle(this.best, this.assets);
+      });
+  }
+
   // ---------------- 状态切换 ----------------
 
   resetRace() {
@@ -167,6 +195,7 @@ export class Game {
       jumpT: -1,
       fastFall: false,
       slideT: 0,
+      slideDur: PLAYER.slideDuration,
       queuedSlide: false,
       stamina: 100,
       gels: 0,
@@ -182,13 +211,12 @@ export class Game {
     while (p.gelPtr < this.course.gels.length && this.course.gels[p.gelPtr].s < p.s + 30) p.gelPtr++;
     this.rivals.forEach((r) => {
       Object.assign(r, { s: p.s + r.cfg.start, speed: 0, lane: r.cfg.lane, laneX: r.cfg.lane * LANE_W, y: 0, jumpT: -1, slideT: 0, rowPtr: p.rowPtr, finishTime: 0 });
-      r.runner.readyW = 1;
-      r.runner.cheerW = 0;
+      if (r.runner) r.runner.reset();
     });
-    p.runner.readyW = 1;
-    p.runner.cheerW = 0;
-    p.runner.standW = 0;
-    p.runner.root.visible = true;
+    if (p.runner) {
+      p.runner.reset();
+      p.runner.root.visible = true;
+    }
     this.raceTime = 0;
     this.worldTime = 0;
     this.stage = stageIndexAt(p.s);
@@ -205,7 +233,7 @@ export class Game {
     this.paused = false;
     this.hud.setRaceHudVisible(false);
     this.hud.clearToast();
-    this.hud.showTitle(this.best);
+    this.hud.showTitle(this.best, this.assets);
   }
 
   startCountdown() {
@@ -251,7 +279,7 @@ export class Game {
   finishRace() {
     const p = this.player;
     this.state = 'finished';
-    this.endTimer = 2.4;
+    this.endTimer = 3.5; // 留出减速、握拳庆祝的时间再弹成绩
     const ahead = this.rivals.filter((r) => r.finishTime > 0).length;
     const rank = ahead + 1;
     // 调试用的自动驾驶成绩不记入个人最佳
@@ -270,7 +298,7 @@ export class Game {
   failRace() {
     const p = this.player;
     this.state = 'failed';
-    this.endTimer = 2.0;
+    this.endTimer = 3.0; // 减速、倒地之后再弹成绩
     this.result = { finished: false, time: this.raceTime, rank: 0, total: this.rivals.length + 1, avgSpeed: p.s / Math.max(1, this.raceTime), bestCombo: p.bestCombo, hits: p.hits, distance: p.s, stage: this.stage, best: this.best, isRecord: false };
     this.hud.toast('体力耗尽', '跑不动了…', { size: 40, color: '#ff6b5a', duration: 1.9 });
     this.audio.fail();
@@ -282,7 +310,7 @@ export class Game {
     const rows = this.rivals.map((r) => ({
       name: r.cfg.name,
       me: false,
-      color: '#' + r.cfg.shirt.toString(16).padStart(6, '0'),
+      color: '#' + r.cfg.color.toString(16).padStart(6, '0'),
       time: r.finishTime > 0 ? r.finishTime : Infinity,
       s: r.s,
     }));
@@ -345,7 +373,7 @@ export class Game {
         p.fastFall = true;
         p.queuedSlide = true;
       } else {
-        p.slideT = PLAYER.slideDuration;
+        p.slideT = p.slideDur = PLAYER.slideDuration;
         this.audio.slide();
       }
     }
@@ -363,7 +391,7 @@ export class Game {
     else if (name === 'pause') {
       if (this.state === 'running' || this.state === 'countdown') this.togglePause();
     } else if (name === 'confirm') {
-      if (this.state === 'title') this.press('start');
+      if (this.state === 'title') this.press(this.assets === 'error' ? 'retry' : 'start');
       else if (this.paused) this.press('resume');
       else if (this.hud.screenMode === 'result') this.press('restart');
     }
@@ -373,7 +401,11 @@ export class Game {
     switch (id) {
       case 'start':
       case 'restart':
-        this.startCountdown();
+        // 人物还没加载完不能开始
+        if (this.assets === 'ready') this.startCountdown();
+        break;
+      case 'retry':
+        if (this.assets === 'error') this.loadRunners();
         break;
       case 'home':
         this.resetRace();
@@ -413,6 +445,7 @@ export class Game {
 
   update(dt) {
     this.time += dt;
+    this.frame = (this.frame + 1) | 0;
     const p = this.player;
     const hud = this.hud;
 
@@ -435,7 +468,7 @@ export class Game {
         this.updatePlayer(dt);
       } else if (this.state === 'finished' || this.state === 'failed') {
         // 冲线后慢慢减速
-        p.speed = Math.max(0, p.speed - dt * (this.state === 'finished' ? 4.2 : 7));
+        p.speed = Math.max(0, p.speed - dt * (this.state === 'finished' ? 6.5 : 7));
         p.s += p.speed * dt;
         p.follow = 0;
         this.moveLane(p, this.laneTarget(), dt);
@@ -563,7 +596,7 @@ export class Game {
       this.dust.emit(cx(p.s) + p.laneX, py(p.s) + 0.05, -p.s, 7, 0.5, 1.3);
       if (p.queuedSlide) {
         p.queuedSlide = false;
-        p.slideT = PLAYER.slideDuration * 0.8;
+        p.slideT = p.slideDur = PLAYER.slideDuration * 0.8;
         this.audio.slide();
       }
     }
@@ -620,7 +653,9 @@ export class Game {
         } else if (cell === LOG) {
           if (Math.abs(ds) < 0.42 && dx < 1.0 && p.y < 0.42) hit = LOG;
         } else if (cell === OVER) {
-          if (Math.abs(ds) < 0.36 && !(p.slideT > 0 && p.y < 0.3)) hit = OVER;
+          // 只有身体真的低下去的那一段才钻得过去（刚开始下滑、已经在起身都不算）
+          const low = p.slideT > PLAYER.slideExit && p.slideDur - p.slideT >= PLAYER.slideEnter && p.y < 0.3;
+          if (Math.abs(ds) < 0.36 && !low) hit = OVER;
         }
       }
       if (hit) {
@@ -780,14 +815,18 @@ export class Game {
   }
 
   animateRunners(dt) {
+    if (this.assets !== 'ready') return;
     const p = this.player;
-    const waiting = this.state === 'title' || this.state === 'countdown';
     const lean = clamp((this.laneTarget() - p.laneX) * 0.35, -0.35, 0.35);
-    let mode = waiting ? 'ready' : 'run';
-    if (this.state === 'finished') mode = p.speed > 1.5 ? 'cheer' : 'cheer';
-    if (this.state === 'failed') mode = p.speed < 2 ? 'stand' : 'run';
-    p.runner.animate(dt, { mode, speed: p.speed, airborne: p.jumpT >= 0, sliding: p.slideT > 0 && p.jumpT < 0, lean });
-    this.place(p.runner, p.s, p.laneX, p.y, p.slideT > 0 ? 0.9 : 0.5);
+    // 首页站着，倒计时摆出起跑姿势；冲线后庆祝；体力耗尽先减速、再倒下
+    let mode = 'run';
+    if (this.state === 'title') mode = 'stand';
+    else if (this.state === 'countdown') mode = 'ready';
+    else if (this.state === 'finished') mode = 'cheer';
+    else if (this.state === 'failed') mode = p.speed < 2.6 ? 'collapse' : 'run';
+    const sliding = p.slideT > 0 && p.jumpT < 0;
+    p.runner.animate(dt, { mode, speed: p.speed, airborne: p.jumpT >= 0, sliding, slideLeft: p.slideT, lean });
+    this.place(p.runner, p.s, p.laneX, p.y, sliding ? 0.9 : 0.5);
     // 撞击后的无敌时间里闪烁
     p.runner.root.visible = p.invuln <= 0 || Math.floor(this.time * 14) % 2 === 0;
     if (p.runner.footDown && this.state === 'running') {
@@ -796,13 +835,24 @@ export class Game {
       this.dust.emit(cx(p.s) + p.laneX, py(p.s) + 0.03, -p.s + 0.2, 2, 0.25, 0.7);
     }
     for (const r of this.rivals) {
+      const gap = r.s - p.s;
+      // 离得很远的对手不必画，也不必算动画
+      const visible = gap < 260 && gap > -30;
+      r.runner.root.visible = visible;
+      if (!visible) continue;
+      // 远处的对手隔一帧才更新一次动画
+      r.animDt = (r.animDt || 0) + dt;
+      if (Math.abs(gap) > 32 && (this.frame & 1) === 0) continue;
+      const adt = r.animDt;
+      r.animDt = 0;
       const rl = clamp((r.lane * LANE_W - r.laneX) * 0.35, -0.3, 0.3);
-      const rmode = waiting ? 'ready' : r.finishTime > 0 ? (r.speed > 0.5 ? 'cheer' : 'stand') : 'run';
-      r.runner.animate(dt, { mode: rmode, speed: r.speed, airborne: r.jumpT >= 0, sliding: r.slideT > 0 && r.jumpT < 0, lean: rl });
-      this.place(r.runner, r.s, r.laneX, r.y, r.slideT > 0 ? 0.9 : 0.5);
-      // 离得很远的对手不必画
-      r.runner.root.visible = r.s - p.s < 260 && r.s - p.s > -30;
-      if (r.runner.footDown && Math.abs(r.s - p.s) < 25) this.dust.emit(cx(r.s) + r.laneX, py(r.s) + 0.03, -r.s + 0.2, 1, 0.25, 0.6);
+      const rmode = this.state === 'title' ? 'stand' : this.state === 'countdown' ? 'ready' : r.finishTime > 0 ? 'cheer' : 'run';
+      const rsliding = r.slideT > 0 && r.jumpT < 0;
+      r.runner.animate(adt, { mode: rmode, speed: r.speed, airborne: r.jumpT >= 0, sliding: rsliding, slideLeft: r.slideT, lean: rl });
+      this.place(r.runner, r.s, r.laneX, r.y, rsliding ? 0.9 : 0.5);
+      // 阴影贴图只覆盖玩家周围二十来米，更远的对手不用投影
+      r.runner.setShadow(gap < 24 && gap > -12);
+      if (r.runner.footDown && Math.abs(gap) < 25) this.dust.emit(cx(r.s) + r.laneX, py(r.s) + 0.03, -r.s + 0.2, 1, 0.25, 0.6);
     }
   }
 
@@ -820,6 +870,11 @@ export class Game {
       up = 2.5 + Math.sin(t * 0.7) * 0.25;
       side = Math.sin(t * 0.9) * 1.6;
       lookAhead = 14;
+    }
+    if (this.state === 'failed') {
+      // 力竭倒地时镜头拉远一点，别让倒下的人被底部按钮挡住
+      back += 1.6;
+      up += 0.6;
     }
     const sc = p.s - back;
     const tx = cx(sc) + p.laneX * 0.6 + side;

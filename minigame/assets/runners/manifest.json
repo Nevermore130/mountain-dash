@@ -1,0 +1,186 @@
+{
+ "runners": {
+  "player": {
+   "files": {
+    "player.glb": 234284,
+    "player_body.jpg": 98581,
+    "player_extras.jpg": 16047
+   },
+   "triangles": 8866,
+   "triangleBreakdown": {
+    "body": 6282,
+    "eyes": 384,
+    "brows": 492,
+    "hair": 830,
+    "cap": 292,
+    "glasses": 586
+   },
+   "bones": 23,
+   "sources": [
+    "body",
+    "glasses",
+    "cap"
+   ],
+   "height": 1.81
+  },
+  "afeng": {
+   "files": {
+    "afeng.glb": 216148,
+    "afeng_body.jpg": 101295,
+    "afeng_extras.jpg": 11473
+   },
+   "triangles": 8574,
+   "triangleBreakdown": {
+    "body": 6282,
+    "eyes": 384,
+    "brows": 492,
+    "hair": 830,
+    "glasses": 586
+   },
+   "bones": 23,
+   "sources": [
+    "body",
+    "glasses"
+   ],
+   "height": 1.81
+  },
+  "laozhou": {
+   "files": {
+    "laozhou.glb": 234980,
+    "laozhou_body.jpg": 97702,
+    "laozhou_extras.jpg": 28360
+   },
+   "triangles": 9314,
+   "triangleBreakdown": {
+    "body": 6282,
+    "eyes": 384,
+    "brows": 492,
+    "hair": 1864,
+    "cap": 292
+   },
+   "bones": 23,
+   "sources": [
+    "body",
+    "cap"
+   ],
+   "height": 1.81
+  },
+  "xiaoye": {
+   "files": {
+    "xiaoye.glb": 262552,
+    "xiaoye_body.jpg": 98491,
+    "xiaoye_extras.jpg": 19690
+   },
+   "triangles": 9592,
+   "triangleBreakdown": {
+    "body": 6406,
+    "eyes": 384,
+    "brows": 740,
+    "hair": 1476,
+    "glasses": 586
+   },
+   "bones": 23,
+   "sources": [
+    "body",
+    "glasses"
+   ],
+   "height": 1.767
+  }
+ },
+ "anims": {
+  "file": "anims.glb",
+  "bytes": 200940,
+  "clips": {
+   "idle": {
+    "source": "Idle_Loop",
+    "duration": 2.5
+   },
+   "jog": {
+    "source": "Jog_Fwd_Loop",
+    "duration": 0.933
+   },
+   "sprint": {
+    "source": "Sprint_Loop",
+    "duration": 0.667
+   },
+   "jump_start": {
+    "source": "Jump_Start",
+    "duration": 1.333
+   },
+   "jump_land": {
+    "source": "Jump_Land",
+    "duration": 1.267
+   },
+   "slide_start": {
+    "source": "Slide_Start",
+    "duration": 0.833
+   },
+   "slide_loop": {
+    "source": "Slide_Loop",
+    "duration": 2.0
+   },
+   "slide_exit": {
+    "source": "Slide_Exit",
+    "duration": 0.5
+   },
+   "hit": {
+    "source": "Hit_Chest",
+    "duration": 0.333
+   },
+   "cheer": {
+    "source": "Dance_Loop",
+    "duration": 1.0
+   },
+   "yes": {
+    "source": "Yes",
+    "duration": 2.5
+   },
+   "crouch": {
+    "source": "Crouch_Idle_Loop",
+    "duration": 2.933
+   },
+   "collapse": {
+    "source": "Death01",
+    "duration": 2.4
+   }
+  },
+  "bones": 22,
+  "contacts": {
+   "jog": 0.033,
+   "sprint": 0.133
+  }
+ },
+ "sources": {
+  "body": {
+   "name": "Universal Base Characters [Standard]",
+   "author": "Quaternius",
+   "license": "CC0 1.0",
+   "url": "https://quaternius.com/packs/universalbasecharacters.html"
+  },
+  "anim1": {
+   "name": "Universal Animation Library [Standard]",
+   "author": "Quaternius",
+   "license": "CC0 1.0",
+   "url": "https://quaternius.com/packs/universalanimationlibrary.html"
+  },
+  "anim2": {
+   "name": "Universal Animation Library 2 [Standard]",
+   "author": "Quaternius",
+   "license": "CC0 1.0",
+   "url": "https://quaternius.com/packs/universalanimationlibrary2.html"
+  },
+  "glasses": {
+   "name": "Glasses",
+   "author": "iPoly3D",
+   "license": "CC0 1.0",
+   "url": "https://poly.pizza/m/crbuIoq2dO"
+  },
+  "cap": {
+   "name": "Baseball cap",
+   "author": "jeremy",
+   "license": "CC-BY 3.0",
+   "url": "https://poly.pizza/m/dzfCdDABuiQ"
+  }
+ },
+ "totalBytes": 1620543
+}

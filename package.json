@@ -13,6 +13,7 @@
   },
   "devDependencies": {
     "esbuild": "^0.24.0",
+    "meshoptimizer": "^1.3.0",
     "three": "0.160.1"
   }
 }

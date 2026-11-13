@@ -6,6 +6,12 @@ import { STAGES, RACE_LENGTH, RIVALS, PLAYER } from './config.js';
 
 const DW = 390;
 const ORANGE = '#ff6a13';
+// 首页底部的素材署名
+const CREDITS = [
+  '人物与动画：Quaternius（CC0） · 太阳镜：iPoly3D（CC0）',
+  '帽子：“Baseball cap” by jeremy，CC BY 3.0，已改色',
+  '来源 poly.pizza/m/dzfCdDABuiQ · 许可 creativecommons.org/licenses/by/3.0',
+];
 const FONT = '"PingFang SC", "Helvetica Neue", Helvetica, Arial, sans-serif';
 
 export function formatTime(t) {
@@ -519,7 +525,7 @@ export class Hud {
     // 对手位置
     d.rivals.forEach((rs, i) => {
       const f = Math.max(0, Math.min(1, rs / RACE_LENGTH));
-      c.fillStyle = '#' + RIVALS[i].shirt.toString(16).padStart(6, '0');
+      c.fillStyle = '#' + RIVALS[i].color.toString(16).padStart(6, '0');
       c.beginPath();
       c.arc(x0 + (x1 - x0) * f, py, 3.6, 0, Math.PI * 2);
       c.fill();
@@ -635,7 +641,8 @@ export class Hud {
     this.layers.screen.mesh.visible = false;
   }
 
-  showTitle(best) {
+  // status: 人物素材的加载状态 'loading' | 'ready' | 'error'
+  showTitle(best, status = 'ready') {
     this.screenMode = 'title';
     this.buttons = [];
     const L = this.layers.screen;
@@ -700,8 +707,31 @@ export class Hud {
     });
     text(c, '撞到障碍会掉体力 · 体力耗尽即退赛 · 拾取能量胶补充', DW / 2, Hd - 176, 11, { align: 'center', bold: false, color: 'rgba(255,255,255,0.78)' });
 
-    this._button(c, 'start', '开 始 比 赛', 45, Hd - 146, 300, 58, true);
-    text(c, '点击按钮开始 · 建议打开声音', DW / 2, Hd - 62, 10.5, { align: 'center', bold: false, color: 'rgba(255,255,255,0.55)', shadow: false });
+    const by = Hd - 152;
+    let hint = '点击按钮开始 · 建议打开声音';
+    if (status === 'ready') {
+      this._button(c, 'start', '开 始 比 赛', 45, by, 300, 58, true);
+    } else if (status === 'error') {
+      this._button(c, 'retry', '加载失败 · 点击重试', 45, by, 300, 58, false);
+      hint = '人物素材没有加载成功，请检查后重试';
+    } else {
+      // 加载中：画一个不可点的按钮
+      c.fillStyle = 'rgba(18,20,23,0.7)';
+      rrect(c, 45, by, 300, 58, 29);
+      c.fill();
+      text(c, '正在加载选手…', DW / 2, by + 29.5, 16, { align: 'center', color: 'rgba(255,255,255,0.7)', shadow: false });
+      hint = '马上就好';
+    }
+    text(c, hint, DW / 2, by + 78, 10.5, { align: 'center', bold: false, color: status === 'error' ? '#ffb4a8' : 'rgba(255,255,255,0.55)', shadow: false });
+
+    // 素材署名（帽子是 CC BY 3.0，必须写明作品、作者、许可证和来源）
+    CREDITS.forEach((line, i) => {
+      let size = 8.6;
+      c.font = font(size, { bold: false });
+      const wid = c.measureText(line).width;
+      if (wid > DW - 36) size *= (DW - 36) / wid;
+      text(c, line, DW / 2, by + 99 + i * 12.5, size, { align: 'center', bold: false, color: 'rgba(255,255,255,0.5)', shadow: false });
+    });
     L.end();
   }
 

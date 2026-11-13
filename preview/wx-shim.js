@@ -2,6 +2,7 @@
 // 这样 minigame/game.js 这份产物可以原样在浏览器里跑（仅用于开发预览）。
 (function () {
   const stage = document.getElementById('stage');
+  const ASSET_BASE = '../minigame/'; // 预览页在 preview/ 下，小游戏代码包在 minigame/ 下
   const mainCanvas = document.getElementById('game');
   let canvasCount = 0;
 
@@ -135,6 +136,31 @@
     },
     vibrateShort() {
       if (navigator.vibrate) navigator.vibrate(15);
+    },
+    // 素材路径都相对小游戏代码包根目录（minigame/）
+    createImage() {
+      const img = new Image();
+      const desc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+      Object.defineProperty(img, 'src', {
+        get: () => desc.get.call(img),
+        set: (v) => desc.set.call(img, /^(https?:|data:|\/)/.test(v) ? v : ASSET_BASE + v),
+      });
+      return img;
+    },
+    getFileSystemManager() {
+      return {
+        readFile({ filePath, encoding, success, fail }) {
+          fetch(ASSET_BASE + filePath)
+            .then((r) => {
+              if (!r.ok) throw new Error('HTTP ' + r.status);
+              return encoding ? r.text() : r.arrayBuffer();
+            })
+            .then(
+              (data) => success && success({ data }),
+              (e) => fail && fail({ errMsg: 'readFile:fail ' + e.message })
+            );
+        },
+      };
     },
     setKeepScreenOn() {},
     showShareMenu() {},

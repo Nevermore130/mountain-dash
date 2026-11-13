@@ -1,321 +1,341 @@
-// 跑者：分节的人体模型 + 程序化的跑 / 跳 / 滑铲动画
+// 跑者：glb 蒙皮模型 + 骨骼动画（素材在 minigame/assets/runners/，由 tools/runner-assets 加工生成）
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { loadGLB, loadTexture } from './assets.js';
 import { decodeMap } from './matutil.js';
 
-const THIGH = 0.42;
-const SHIN = 0.42;
-const SOLE = 0.085;
+const DIR = 'assets/runners/';
 
-function colored(geo, hex) {
-  const c = new THREE.Color(hex);
-  const n = geo.attributes.position.count;
-  const arr = new Float32Array(n * 3);
-  for (let i = 0; i < n; i++) {
-    arr[i * 3] = c.r;
-    arr[i * 3 + 1] = c.g;
-    arr[i * 3 + 2] = c.b;
-  }
-  geo.setAttribute('color', new THREE.BufferAttribute(arr, 3));
-  return geo;
+// ---------------------------------------------------------------------------
+// 骨骼蒙皮
+//
+// three r160 自带的蒙皮着色器把骨骼矩阵放在浮点贴图里，并且用了 WebGL2 才有的 texelFetch，
+// 在本工程固定使用的 WebGL1 下编译不过，也不是所有设备都支持浮点贴图。
+// 人物只有 23 根骨骼，这里改成直接用 uniform 数组传骨骼矩阵：不需要任何贴图和扩展。
+// 每根骨骼只传 3 行（仿射矩阵的最后一行恒为 0 0 0 1），整个顶点着色器用到的 uniform
+// 约 106 个 vec4，低于 WebGL1 规范保证的下限 128。
+// ---------------------------------------------------------------------------
+
+let skinningBones = 0;
+
+function installSkinning(boneCount) {
+  if (skinningBones === boneCount) return;
+  if (skinningBones) throw new Error(`人物骨骼数不一致：${skinningBones} / ${boneCount}`);
+  skinningBones = boneCount;
+  THREE.ShaderChunk.skinning_pars_vertex = /* glsl */ `
+#ifdef USE_SKINNING
+	uniform mat4 bindMatrix;
+	uniform mat4 bindMatrixInverse;
+	uniform vec4 boneRows[ ${boneCount * 3} ];
+	mat4 getBoneMatrix( const in float i ) {
+		int j = int( i ) * 3;
+		vec4 r0 = boneRows[ j ];
+		vec4 r1 = boneRows[ j + 1 ];
+		vec4 r2 = boneRows[ j + 2 ];
+		return mat4( r0.x, r1.x, r2.x, 0.0, r0.y, r1.y, r2.y, 0.0, r0.z, r1.z, r2.z, 0.0, r0.w, r1.w, r2.w, 1.0 );
+	}
+#endif`;
 }
 
-function capsule(r, len, hex, sx = 1, sy = 1, sz = 1) {
-  const g = new THREE.CapsuleGeometry(r, len, 3, 8);
-  g.scale(sx, sy, sz);
-  return colored(g, hex);
+// three 每帧在 skeleton.update() 里算好 boneMatrices（列主序 4×4）；这里顺手抽出每根骨骼的前 3 行
+function packBoneRows(skeleton) {
+  if (skeleton.boneRows) return;
+  const n = skeleton.bones.length;
+  const rows = (skeleton.boneRows = new Float32Array(n * 12));
+  const update = skeleton.update;
+  skeleton.update = function () {
+    update.call(this);
+    const m = this.boneMatrices;
+    for (let b = 0; b < n; b++) {
+      const i = b * 16;
+      const o = b * 12;
+      for (let r = 0; r < 3; r++) {
+        rows[o + r * 4] = m[i + r];
+        rows[o + r * 4 + 1] = m[i + 4 + r];
+        rows[o + r * 4 + 2] = m[i + 8 + r];
+        rows[o + r * 4 + 3] = m[i + 12 + r];
+      }
+    }
+  };
 }
 
-let runnerMaterial = null;
-function getMaterial() {
-  if (!runnerMaterial) runnerMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.78, metalness: 0 });
-  return runnerMaterial;
+// three 在画蒙皮网格前会检查「浮点贴图 + 顶点贴图采样」这项能力，不支持就每帧打一条警告。
+// 我们不用骨骼贴图，把这项标成支持即可（它只会去设置一个着色器里并不存在的 boneTexture，等于什么都不做）。
+export function setupSkinning(renderer) {
+  renderer.capabilities.floatVertexTextures = true;
 }
 
-function part(geos) {
-  const g = geos.length === 1 ? geos[0] : mergeGeometries(geos);
-  const m = new THREE.Mesh(g, getMaterial());
-  m.castShadow = true;
-  return m;
+// 让材质把这副骨架的骨骼矩阵当作 uniform 传进着色器
+function skinned(material, skeleton) {
+  packBoneRows(skeleton);
+  const prev = material.onBeforeCompile;
+  const prevKey = Object.prototype.hasOwnProperty.call(material, 'customProgramCacheKey') ? material.customProgramCacheKey : null;
+  material.onBeforeCompile = (shader, renderer) => {
+    if (prev) prev(shader, renderer);
+    shader.uniforms.boneRows = { value: skeleton.boneRows };
+  };
+  material.customProgramCacheKey = () => (prevKey ? prevKey.call(material) : '') + '|bones';
+  return material;
 }
 
-const SKIN = [0xd9a47e, 0xc68e68, 0xe2b48f, 0xb9805a];
+// ---------------------------------------------------------------------------
+// 素材
+// ---------------------------------------------------------------------------
 
-// 姿态数组下标
-const HIP_L = 0,
-  HIP_R = 1,
-  KNEE_L = 2,
-  KNEE_R = 3,
-  SH_L = 4,
-  SH_R = 5,
-  EL_L = 6,
-  EL_R = 7,
-  LEAN = 8,
-  TWIST = 9,
-  PITCH = 10,
-  ANK_L = 11,
-  ANK_R = 12,
-  N_POSE = 13;
+// 读入共用动画和各选手的模型 / 贴图。任何一个文件失败都会 reject
+export function loadRunnerLibrary(names) {
+  const one = (name) =>
+    Promise.all([loadGLB(DIR + name + '.glb'), loadTexture(DIR + name + '_body.jpg'), loadTexture(DIR + name + '_extras.jpg')]).then(([gltf, body, extras]) => ({ gltf, body, extras }));
+  return Promise.all([loadGLB(DIR + 'anims.glb'), ...names.map(one)]).then(([anims, ...models]) => {
+    const extras = anims.scene.userData;
+    const lib = { clips: {}, pelvisRest: extras.pelvisRest, contacts: extras.contacts || { jog: 0, sprint: 0 }, models: {} };
+    for (const clip of anims.animations) lib.clips[clip.name] = clip;
+    names.forEach((n, i) => (lib.models[n] = models[i]));
+    return lib;
+  });
+}
 
-const POSE_JUMP = [1.15, -0.4, 1.35, 1.55, -0.7, 1.0, 1.2, 1.4, -0.28, 0, -0.08, 0.3, -0.5];
-const POSE_SLIDE = [0.38, 0.95, 0.08, 1.65, -1.05, -0.5, 0.35, 0.9, -0.52, 0.1, 1.16, -0.3, 0.2];
-const POSE_READY = [0.5, -0.35, 0.55, 0.5, -0.5, 0.6, 1.4, 1.3, -0.32, 0, 0, 0, 0.3];
-const POSE_STAND = [0.04, -0.04, 0.06, 0.06, 0.05, -0.05, 0.25, 0.25, -0.03, 0, 0, 0, 0];
+// 动画是按参考骨架录的：旋转直接套用，骨盆的位移按腿长比例缩放
+function retarget(clip, k) {
+  const tracks = clip.tracks.map((t) => {
+    if (t.name !== 'pelvis.position') return t;
+    const v = new Float32Array(t.values.length);
+    for (let i = 0; i < v.length; i++) v[i] = t.values[i] * k;
+    return new THREE.VectorKeyframeTrack(t.name, t.times, v);
+  });
+  return new THREE.AnimationClip(clip.name, clip.duration, tracks);
+}
+
+// ---------------------------------------------------------------------------
+// 动作编排
+// ---------------------------------------------------------------------------
+
+const LOOPS = ['idle', 'crouch', 'jog', 'sprint', 'slide_loop', 'cheer'];
+// 一个完整步态周期（两步）的时长：刚起步 / 全速
+const CYCLE_SLOW = 0.7;
+const CYCLE_FAST = 0.54;
+// 各段一次性动作从片段的哪一秒开始播（跳过原动画里游戏用不上的预备部分）
+const JUMP_FROM = 0.14; // 起跳：跳过下蹲蓄力，直接从蹬地开始
+const LAND_FROM = 0.1; // 落地：从脚刚着地开始
+const LAND_TIME = 0.26; // 落地缓冲叠加在跑步上的时长
+const SLIDE_FROM = 0.2; // 入滑：从身体开始后倒开始
+const SLIDE_IN = 0.12; // 入滑片段播这么久之后切到滑行姿势
+const SLIDE_OUT_FROM = 0.14; // 出滑：从开始起身开始
+export const SLIDE_OUT = 0.2; // 滑铲结束前这么久开始起身
+const HIT_TIME = 0.42;
+const YES_TIME = 2.2; // 冲线后先握拳庆祝这么久，再接循环的庆祝动作
+
+const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 export class Runner {
-  constructor(opts = {}) {
-    const shirt = opts.shirt ?? 0xe8521c;
-    const shorts = opts.shorts ?? 0x24262b;
-    const vest = opts.vest ?? 0x3a4038;
-    const shoe = opts.shoe ?? 0xffa01e;
-    const cap = opts.cap ?? 0xe9e6dc;
-    const sock = opts.sock ?? 0xf2f2f2;
-    const skin = opts.skin ?? SKIN[(opts.index || 0) % SKIN.length];
-    const hair = 0x1c1714;
-
+  constructor(lib, name, opts = {}) {
+    const src = lib.models[name];
+    if (!src) throw new Error(`没有名为 ${name} 的人物模型`);
+    this.name = name;
     this.root = new THREE.Group();
-    this.pelvis = new THREE.Group();
-    this.root.add(this.pelvis);
+    this.tilt = new THREE.Group(); // 变道时的侧倾
+    this.root.add(this.tilt);
+    this.model = src.gltf.scene;
+    this.model.rotation.y = Math.PI; // 模型朝 +Z，游戏里跑者朝 -Z
+    this.model.position.y = 0.014; // 鞋底加厚的那一点
+    this.tilt.add(this.model);
 
-    // 髋部
-    const hips = capsule(0.145, 0.07, shorts, 1.1, 1, 0.84);
-    hips.rotateZ(Math.PI / 2);
-    hips.translate(0, 0.02, 0);
-    this.pelvis.add(part([hips]));
+    this.meshes = [];
+    this.model.traverse((o) => {
+      if (!o.isSkinnedMesh) return;
+      installSkinning(o.skeleton.bones.length);
+      const isBody = o.name === 'body';
+      o.material = skinned(
+        decodeMap(new THREE.MeshStandardMaterial({ map: isBody ? src.body : src.extras, roughness: isBody ? 0.78 : 0.7, metalness: 0, side: isBody ? THREE.FrontSide : THREE.DoubleSide })),
+        o.skeleton
+      );
+      o.customDepthMaterial = skinned(new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking }), o.skeleton);
+      o.castShadow = true;
+      o.receiveShadow = false;
+      // 包围球按静止姿势算会不准（滑铲、倒地时身体伸得很开），给一个足够大的固定值
+      o.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.9, 0), 2.3);
+      this.meshes.push(o);
+    });
 
-    // 躯干（含越野背心、头、帽子）
-    this.torso = new THREE.Group();
-    this.torso.position.y = 0.06;
-    this.pelvis.add(this.torso);
-    const chest = capsule(0.15, 0.27, shirt, 1.14, 1, 0.8);
-    chest.translate(0, 0.27, 0);
-    const pack = capsule(0.118, 0.17, vest, 1.3, 1, 0.62);
-    pack.translate(0, 0.35, 0.095);
-    const strapL = colored(new THREE.BoxGeometry(0.055, 0.34, 0.03), vest);
-    strapL.translate(-0.088, 0.36, -0.118);
-    const strapR = strapL.clone();
-    strapR.translate(0.176, 0, 0);
-    const flaskL = capsule(0.028, 0.07, 0x9fd8f0);
-    flaskL.translate(-0.09, 0.33, -0.145);
-    const flaskR = flaskL.clone();
-    flaskR.translate(0.18, 0, 0);
-    const neck = colored(new THREE.CylinderGeometry(0.047, 0.055, 0.1, 8), skin);
-    neck.translate(0, 0.56, 0);
-    const head = colored(new THREE.SphereGeometry(0.106, 14, 10), skin);
-    head.scale(0.94, 1.08, 1);
-    head.translate(0, 0.705, -0.01);
-    const hairG = colored(new THREE.SphereGeometry(0.111, 12, 6, 0, Math.PI, Math.PI * 0.42, Math.PI * 0.34), hair);
-    hairG.scale(0.95, 1.08, 1);
-    hairG.translate(0, 0.705, -0.005);
-    const capG = colored(new THREE.SphereGeometry(0.113, 14, 6, 0, Math.PI * 2, 0, Math.PI * 0.47), cap);
-    capG.scale(0.96, 1.02, 1.02);
-    capG.translate(0, 0.72, -0.01);
-    const brim = colored(new THREE.CylinderGeometry(0.085, 0.085, 0.012, 12, 1, false, Math.PI * 0.5, Math.PI), cap);
-    brim.scale(1, 1, 1.25);
-    brim.translate(0, 0.742, -0.085);
-    this.torso.add(part([chest, pack, strapL, strapR, flaskL, flaskR, neck, head, hairG, capG, brim]));
-
-    // 手臂
-    const makeArm = (side) => {
-      const shoulder = new THREE.Group();
-      shoulder.position.set(side * 0.205, 0.46, 0);
-      const upper = capsule(0.046, 0.19, skin);
-      upper.translate(0, -0.135, 0);
-      const sleeve = capsule(0.057, 0.07, shirt);
-      sleeve.translate(0, -0.055, 0);
-      shoulder.add(part([upper, sleeve]));
-      const elbow = new THREE.Group();
-      elbow.position.y = -0.27;
-      shoulder.add(elbow);
-      const fore = capsule(0.039, 0.19, skin);
-      fore.translate(0, -0.125, 0);
-      const hand = colored(new THREE.SphereGeometry(0.046, 8, 6), skin);
-      hand.translate(0, -0.275, 0);
-      const geos = [fore, hand];
-      if (side < 0) {
-        const watch = colored(new THREE.BoxGeometry(0.05, 0.035, 0.09), 0x15171a);
-        watch.translate(0, -0.21, 0);
-        geos.push(watch);
-      }
-      elbow.add(part(geos));
-      this.torso.add(shoulder);
-      return { shoulder, elbow };
-    };
-    this.armL = makeArm(-1);
-    this.armR = makeArm(1);
-
-    // 腿
-    const makeLeg = (side) => {
-      const hip = new THREE.Group();
-      hip.position.set(side * 0.095, 0, 0);
-      const thigh = capsule(0.08, THIGH - 0.16, skin);
-      thigh.translate(0, -THIGH / 2, 0);
-      const shortsLeg = capsule(0.09, 0.1, shorts);
-      shortsLeg.translate(0, -0.1, 0);
-      hip.add(part([thigh, shortsLeg]));
-      const knee = new THREE.Group();
-      knee.position.y = -THIGH;
-      hip.add(knee);
-      const shin = capsule(0.057, SHIN - 0.13, skin, 1, 1, 1.12);
-      shin.translate(0, -SHIN / 2 + 0.01, 0.006);
-      const sockG = capsule(0.05, 0.07, sock);
-      sockG.translate(0, -SHIN + 0.085, 0);
-      knee.add(part([shin, sockG]));
-      const ankle = new THREE.Group();
-      ankle.position.y = -SHIN;
-      knee.add(ankle);
-      const upperShoe = capsule(0.05, 0.13, shoe, 0.95, 1, 0.85);
-      upperShoe.rotateX(Math.PI / 2);
-      upperShoe.translate(0, -0.03, -0.06);
-      const sole = colored(new THREE.BoxGeometry(0.098, 0.03, 0.27), 0xf4f1ea);
-      sole.translate(0, -0.07, -0.062);
-      const lug = colored(new THREE.BoxGeometry(0.084, 0.014, 0.24), 0x5a544d);
-      lug.translate(0, -0.09, -0.062);
-      ankle.add(part([upperShoe, sole, lug]));
-      this.pelvis.add(hip);
-      return { hip, knee, ankle };
-    };
-    this.legL = makeLeg(-1);
-    this.legR = makeLeg(1);
-
-    this.phase = opts.phase || 0;
-    this.jumpW = 0;
-    this.slideW = 0;
-    this.readyW = 1;
-    this.standW = 0;
-    this.cheerW = 0;
-    this.stumble = 0;
+    const rest = src.gltf.scene.userData.pelvisRest || lib.pelvisRest;
+    const k = rest[2] / lib.pelvisRest[2];
+    this.mixer = new THREE.AnimationMixer(this.model);
+    this.actions = {};
+    this.weights = {};
+    for (const key in lib.clips) {
+      const a = this.mixer.clipAction(retarget(lib.clips[key], k));
+      const loop = LOOPS.indexOf(key) >= 0;
+      a.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+      a.clampWhenFinished = !loop;
+      a.setEffectiveWeight(0);
+      a.play();
+      this.actions[key] = a;
+      this.weights[key] = 0;
+    }
+    this.blend = {};
+    for (const key in this.actions) if (key !== 'hit' && key !== 'jump_land') this.blend[key] = 0;
+    this.contacts = lib.contacts;
+    this.phase = opts.phase || 0; // 步态相位 0..1，0 和 0.5 是左 / 右脚落地
+    this.footDown = false; // 本帧是否有脚落地（脚步声 / 扬尘用）
     this.roll = 0;
-    this.pose = new Float32Array(N_POSE);
-    this.footDown = false; // 本帧是否有脚落地（用于脚步声 / 扬尘）
-    this._lastHalf = 0;
-    this.pelvisY = 0.92;
+    this.reset();
   }
 
-  // 名牌（对手头顶的名字）
+  // 回到起跑前的状态
+  reset() {
+    for (const key in this.blend) this.blend[key] = 0;
+    this.blend.idle = 1;
+    this.hitT = 0;
+    this.landT = 0;
+    this.cheerT = 0;
+    this._air = false;
+    this._slide = false;
+    this._exiting = false;
+    this._down = false;
+    this._wasSliding = false;
+    this._wasAir = false;
+    this._half = Math.floor(this.phase * 2);
+    this.animate(0, { mode: 'stand', speed: 0 });
+  }
+
+  // 头顶的名牌：保持固定的屏幕大小，不随远近缩放
   addNameTag(texture, aspect) {
-    // 名牌保持固定的屏幕大小，不随远近缩放
     const mat = decodeMap(new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false, fog: false, sizeAttenuation: false, toneMapped: false }));
     const sp = new THREE.Sprite(mat);
     const h = 0.04;
     sp.scale.set(h * aspect, h, 1);
-    sp.position.y = 2.12;
+    sp.position.y = 2.08;
     sp.renderOrder = 5;
     this.root.add(sp);
     this.tag = sp;
   }
 
+  setShadow(on) {
+    for (const m of this.meshes) m.castShadow = on;
+  }
+
+  _play(key, from = 0) {
+    const a = this.actions[key];
+    a.reset();
+    a.time = from;
+    a.play();
+  }
+
   /**
    * @param dt 帧间隔
-   * @param st { mode: 'ready'|'run'|'stand'|'cheer', speed, airborne, sliding, lean }
+   * @param st {
+   *   mode: 'stand' 站立 | 'ready' 起跑预备 | 'run' | 'cheer' 冲线后 | 'collapse' 力竭,
+   *   speed, airborne, sliding, slideLeft（滑铲还剩多少秒）, lean（-1..1，变道侧倾）
+   * }
    */
   animate(dt, st) {
-    const p = this.pose;
     const speed = st.speed || 0;
-    const k = Math.min(1, dt * 12);
-    const toward = (v, target, rate = k) => v + (target - v) * rate;
-    this.jumpW = toward(this.jumpW, st.airborne ? 1 : 0, Math.min(1, dt * 14));
-    this.slideW = toward(this.slideW, st.sliding ? 1 : 0, Math.min(1, dt * 13));
-    this.readyW = toward(this.readyW, st.mode === 'ready' ? 1 : 0, Math.min(1, dt * 7));
-    this.standW = toward(this.standW, st.mode === 'stand' ? 1 : 0, Math.min(1, dt * 4));
-    this.cheerW = toward(this.cheerW, st.mode === 'cheer' ? 1 : 0, Math.min(1, dt * 4));
-    this.stumble = Math.max(0, this.stumble - dt * 1.6);
-    this.roll = toward(this.roll, st.lean || 0, Math.min(1, dt * 10));
+    const A = this.actions;
+    const W = this.weights;
+    const target = {};
+    for (const key in W) target[key] = 0;
+    const air = !!st.airborne;
+    const sliding = !!st.sliding && !air;
+    const down = st.mode === 'collapse';
 
-    // 步频随速度略增：约 2.8~3.3 步/秒
-    const cadence = speed > 0.5 ? 8.6 + speed * 0.14 : 0;
-    this.phase += cadence * dt;
-    const ph = this.phase;
-    const stride = Math.min(1, 0.55 + speed / 22);
-
-    const half = Math.floor((ph + Math.PI * 0.55) / Math.PI);
-    this.footDown = half !== this._lastHalf && speed > 1 && !st.airborne && !st.sliding;
-    this._lastHalf = half;
-
-    // ---- 跑步循环 ----
-    const pL = ph;
-    const pR = ph + Math.PI;
-    const hip = (a) => 0.14 + 0.76 * stride * Math.sin(a);
-    const knee = (a) => {
-      const c = 0.5 + 0.5 * Math.cos(a + Math.PI / 3);
-      return 0.22 + 1.5 * stride * c * c;
-    };
-    p[HIP_L] = hip(pL);
-    p[HIP_R] = hip(pR);
-    p[KNEE_L] = knee(pL);
-    p[KNEE_R] = knee(pR);
-    p[ANK_L] = 0.25 * Math.sin(pL + 0.9);
-    p[ANK_R] = 0.25 * Math.sin(pR + 0.9);
-    p[SH_L] = 0.1 - 0.85 * stride * Math.sin(pL);
-    p[SH_R] = 0.1 - 0.85 * stride * Math.sin(pR);
-    p[EL_L] = 1.45 - 0.3 * Math.sin(pL);
-    p[EL_R] = 1.45 - 0.3 * Math.sin(pR);
-    p[LEAN] = -0.14 - speed * 0.006;
-    p[TWIST] = 0.13 * Math.sin(ph);
-    p[PITCH] = 0;
-
-    const blend = (target, w) => {
-      if (w < 0.001) return;
-      for (let i = 0; i < N_POSE; i++) p[i] += (target[i] - p[i]) * w;
-    };
-    blend(POSE_STAND, this.standW);
-    blend(POSE_READY, this.readyW);
-    if (this.cheerW > 0.001) {
-      const w = this.cheerW;
-      const wave = Math.sin(this.phase * 0.5) * 0.15;
-      p[SH_L] += (2.75 + wave - p[SH_L]) * w;
-      p[SH_R] += (2.75 - wave - p[SH_R]) * w;
-      p[EL_L] += (0.25 - p[EL_L]) * w;
-      p[EL_R] += (0.25 - p[EL_R]) * w;
-      p[LEAN] += (0.06 - p[LEAN]) * w;
+    // ---- 一次性动作的触发 ----
+    if (air && !this._air) this._play('jump_start', JUMP_FROM);
+    if (!air && this._air && !sliding) {
+      this._play('jump_land', LAND_FROM);
+      this.landT = LAND_TIME;
     }
-    blend(POSE_JUMP, this.jumpW);
-    blend(POSE_SLIDE, this.slideW);
-
-    if (this.stumble > 0) {
-      const s = this.stumble;
-      p[LEAN] -= 0.55 * s;
-      p[SH_L] += Math.sin(ph * 2.3) * 0.9 * s;
-      p[SH_R] -= Math.cos(ph * 2.1) * 0.9 * s;
-      p[EL_L] -= 0.6 * s;
-      p[EL_R] -= 0.6 * s;
+    if (sliding && !this._slide) {
+      this._play('slide_start', SLIDE_FROM);
+      this._exiting = false;
     }
+    if (sliding && !this._exiting && st.slideLeft !== undefined && st.slideLeft <= SLIDE_OUT) {
+      this._play('slide_exit', SLIDE_OUT_FROM);
+      this._exiting = true;
+    }
+    if (down && !this._down) this._play('collapse');
+    if (st.mode === 'cheer') {
+      if (this.cheerT === 0 && speed < 2.2) this._play('yes');
+      if (speed < 2.2) this.cheerT += dt;
+    } else this.cheerT = 0;
+    this._air = air;
+    this._slide = sliding;
+    this._down = down;
 
-    // ---- 把姿态写到骨骼上 ----
-    this.legL.hip.rotation.x = p[HIP_L];
-    this.legR.hip.rotation.x = p[HIP_R];
-    this.legL.knee.rotation.x = -p[KNEE_L];
-    this.legR.knee.rotation.x = -p[KNEE_R];
-    this.legL.ankle.rotation.x = p[ANK_L] + (p[KNEE_L] - p[HIP_L]) * 0.35;
-    this.legR.ankle.rotation.x = p[ANK_R] + (p[KNEE_R] - p[HIP_R]) * 0.35;
-    this.armL.shoulder.rotation.x = p[SH_L];
-    this.armR.shoulder.rotation.x = p[SH_R];
-    this.armL.shoulder.rotation.z = -0.1;
-    this.armR.shoulder.rotation.z = 0.1;
-    this.armL.elbow.rotation.x = p[EL_L];
-    this.armR.elbow.rotation.x = p[EL_R];
-    // 摆臂时前臂略向身体中线收
-    this.armL.elbow.rotation.z = -0.35;
-    this.armR.elbow.rotation.z = 0.35;
-    this.torso.rotation.x = p[LEAN];
-    this.torso.rotation.y = p[TWIST];
-    this.pelvis.rotation.x = p[PITCH];
-    this.pelvis.rotation.y = -p[TWIST] * 0.5;
-    this.pelvis.rotation.z = -this.roll;
+    // ---- 这一帧各动作该占多少 ----
+    const fast = clamp01((speed - 8.5) / 4.5);
+    let rate = 10;
+    if (sliding) {
+      rate = 22;
+      if (this._exiting) target.slide_exit = 1;
+      else if (A.slide_start.time < SLIDE_FROM + SLIDE_IN) target.slide_start = 1;
+      else target.slide_loop = 1;
+    } else if (air) {
+      rate = 18;
+      target.jump_start = 1;
+    } else if (down) {
+      rate = 6;
+      target.collapse = 1;
+    } else if (st.mode === 'ready') {
+      rate = 5;
+      target.crouch = 1;
+    } else if (st.mode === 'cheer' && speed < 2.2) {
+      rate = 5;
+      if (this.cheerT < YES_TIME) target.yes = 1;
+      else target.cheer = 1;
+    } else if (st.mode === 'stand' || speed < 0.6) {
+      rate = 6;
+      target.idle = 1;
+    } else {
+      // 起步时从站姿过渡到跑姿，速度越快冲刺动作占得越多
+      const go = clamp01(speed / 3.5);
+      target.idle = 1 - go;
+      target.jog = go * (1 - fast);
+      target.sprint = go * fast;
+      if (this._wasSliding || this._wasAir) rate = 14;
+    }
+    this._wasSliding = sliding;
+    this._wasAir = air;
 
-    // 让支撑脚踩在地面上：用正向运动学求两只脚的最低点
-    const reach = (h, kn) => THIGH * Math.cos(h) + SHIN * Math.cos(h - kn);
-    let grounded = Math.max(reach(p[HIP_L], p[KNEE_L]), reach(p[HIP_R], p[KNEE_R])) + SOLE;
-    // 腾空期稍微离地
-    const flight = Math.max(0, -Math.cos(2 * ph)) * 0.05 * stride * (1 - this.readyW) * (1 - this.standW);
-    grounded += flight;
-    let y = grounded + (0.9 - grounded) * this.jumpW;
-    y += (0.3 - y) * this.slideW;
-    this.pelvisY = y;
-    this.pelvis.position.y = y;
+    // 受击 / 落地缓冲：短暂叠加在当前动作上
+    this.hitT = Math.max(0, this.hitT - dt);
+    this.landT = sliding || air ? 0 : Math.max(0, this.landT - dt);
+    const hitW = clamp01(this.hitT / 0.16) * 0.85;
+    const landW = clamp01(this.landT / (LAND_TIME * 0.6)) * 0.6;
+
+    // blend 里是平滑过渡中的基础动作权重；最终权重 = 归一化后的基础权重 × 没被叠加动作占掉的部分
+    const B = this.blend;
+    const k = dt > 0 ? Math.min(1, dt * rate) : 1;
+    let sum = 0;
+    for (const key in B) {
+      B[key] += (target[key] - B[key]) * k;
+      if (B[key] < 0.002) B[key] = 0;
+      sum += B[key];
+    }
+    const base = ((1 - hitW) * (1 - landW)) / (sum || 1);
+    for (const key in B) W[key] = B[key] * base;
+    W.hit = hitW;
+    W.jump_land = landW * (1 - hitW);
+    for (const key in W) A[key].setEffectiveWeight(W[key]);
+
+    // ---- 两套跑步动画共用一个相位，脚步才对得上 ----
+    const running = W.jog + W.sprint > 0.02;
+    if (running) this.phase = (this.phase + dt / (CYCLE_SLOW + (CYCLE_FAST - CYCLE_SLOW) * fast)) % 1;
+    for (const key of ['jog', 'sprint']) {
+      const a = A[key];
+      a.timeScale = 0;
+      a.time = ((this.phase + this.contacts[key]) % 1) * a.getClip().duration;
+    }
+    const half = Math.floor(this.phase * 2);
+    this.footDown = running && half !== this._half && speed > 1 && !air && !sliding;
+    this._half = half;
+
+    this.mixer.update(dt);
+
+    this.roll += ((st.lean || 0) - this.roll) * Math.min(1, dt * 10);
+    this.tilt.rotation.z = -this.roll;
   }
 
   hit() {
-    this.stumble = 1;
+    this.hitT = HIT_TIME;
+    this._play('hit');
   }
 }

@@ -1,0 +1,4 @@
+# tools/runner-assets/build.py 的依赖（Python 3.12）
+numpy==2.5.4
+pillow==13.0.0
+scipy==1.18.1

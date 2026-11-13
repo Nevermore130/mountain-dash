@@ -9,6 +9,8 @@ export const PLAYER = {
   jumpDuration: 0.74,
   jumpHeight: 1.3,
   slideDuration: 0.78,
+  slideEnter: 0.07, // 滑铲开始后这么久身体才算低下去（之前撞到横木仍然算撞）
+  slideExit: 0.12, // 滑铲结束前这么久已经在起身，同样不算低
   laneSpeed: 20, // 横向换线的最高速度 m/s
   laneSnap: 22, // 越大越跟手：横向速度 = 离目标的距离 × laneSnap，夹在 laneMinSpeed 和 laneSpeed 之间
   laneMinSpeed: 5,
@@ -162,11 +164,15 @@ export const STAGES = [
   },
 ];
 
+// 玩家用的人物模型（minigame/assets/runners/<model>.glb）
+export const PLAYER_MODEL = 'player';
+
 export const RIVALS = [
+  // model: 人物模型；color: 成绩榜 / 进度条上代表这名选手的颜色（和上衣一致）
   // curve: 相对标准配速的倍率，按赛程 0..1 线性插值
-  { name: '阿峰', shirt: 0x2f7fd8, shoe: 0x21c7ff, cap: 0x23303f, lane: -1, start: 0.9, curve: [1.02, 1.03, 1.045, 1.065, 1.08, 1.09] },
-  { name: '老周', shirt: 0xe9ebee, shoe: 0xff7a1a, cap: 0x9aa3ad, lane: 1, start: 0.9, curve: [1.04, 1.04, 1.035, 1.035, 1.03, 1.035] },
-  { name: '小野', shirt: 0xd9384f, shoe: 0xff4d8d, cap: 0x2a2a2e, lane: 0, start: 2.3, curve: [1.1, 1.08, 1.04, 1.0, 0.975, 0.97] },
+  { name: '阿峰', model: 'afeng', color: 0x2f7fd8, lane: -1, start: 0.9, curve: [1.02, 1.03, 1.045, 1.065, 1.08, 1.09] },
+  { name: '老周', model: 'laozhou', color: 0xe9ebee, lane: 1, start: 0.9, curve: [1.04, 1.04, 1.035, 1.035, 1.03, 1.035] },
+  { name: '小野', model: 'xiaoye', color: 0xd9384f, lane: 0, start: 2.3, curve: [1.1, 1.08, 1.04, 1.0, 0.975, 0.97] },
 ];
 
 export function stageIndexAt(s) {
