@@ -165,6 +165,140 @@
     setKeepScreenOn() {},
     showShareMenu() {},
     onShareAppMessage() {},
+    onShareTimeline() {},
     setPreferredFramesPerSecond() {},
+
+    // ---- 好友排行榜相关（模拟）----
+    getOpenDataContext: () => openDataContext,
+    getSetting({ success }) {
+      setTimeout(() => success && success({ authSetting: friendAuth === 'granted' ? { 'scope.WxFriendInteraction': true } : {} }), 0);
+    },
+    authorize({ success, fail }) {
+      // 真机上第一次会弹窗；这里 friends=deny 模拟"之前拒绝过"，其余情况直接同意
+      setTimeout(() => {
+        if (friendAuth === 'denied') return fail && fail({ errMsg: 'authorize:fail auth deny' });
+        friendAuth = 'granted';
+        if (success) success({});
+      }, 0);
+    },
+    openSetting({ success }) {
+      // 模拟用户在设置页里把开关打开了
+      friendAuth = 'granted';
+      setTimeout(() => success && success({ authSetting: { 'scope.WxFriendInteraction': true } }), 0);
+    },
+    shareAppMessage(info) {
+      window.__shared = info;
+      console.log('[预览] 转发给好友：', info.title, info.query || '');
+    },
   };
+
+  // ---------------- 开放数据域（模拟） ----------------
+  // 把 minigame/openDataContext/index.js 原样放进一个只看得到假 wx 的函数里跑；好友数据是下面编的。
+  // 预览地址可以加参数：friends=0 没有好友上榜；friends=20 好友很多；friends=deny 拒绝过授权；friends=fail 接口报错；
+  // self=noid 拿不到自己的 openId
+  const sharedCanvas = document.createElement('canvas');
+  const friendMode = opts.friends;
+  let friendAuth = friendMode === 'deny' ? 'denied' : 'unknown';
+  let onOpenMessage = null;
+  const pendingMessages = [];
+  const openDataContext = {
+    canvas: sharedCanvas,
+    postMessage(msg) {
+      const copy = JSON.parse(JSON.stringify(msg));
+      if (!onOpenMessage) pendingMessages.push(copy);
+      else setTimeout(() => onOpenMessage(copy), 0);
+    },
+  };
+
+  const thisWeek = Math.floor((Date.now() / 86400000 + 8 / 24 + 3) / 7);
+  const AVATAR_COLORS = ['#3d7a5f', '#b5553c', '#4a6fa5', '#8a6d3b', '#7a4f8f', '#3f8a8a', '#a0527a'];
+  // 用画布现画一张头像，省得预览时去外网拉图
+  function mockAvatar(name, i) {
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = 96;
+    const c = cv.getContext('2d');
+    c.fillStyle = AVATAR_COLORS[i % AVATAR_COLORS.length];
+    c.fillRect(0, 0, 96, 96);
+    c.fillStyle = 'rgba(255,255,255,0.92)';
+    c.font = 'bold 48px "PingFang SC", sans-serif';
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    c.fillText(Array.from(name)[0], 48, 52);
+    return cv.toDataURL('image/png');
+  }
+  function mockFriends() {
+    if (friendMode === 0) return [];
+    const list = [
+      ['阿杰', thisWeek, 158410, 2000],
+      ['山里的风🌲', thisWeek, 167900, 2000],
+      ['Lynn', thisWeek, 179120, 2000],
+      ['老周（周末不加班）爱跑山', thisWeek, 192660, 2000],
+      ['小鹿', thisWeek, 0, 1460],
+      ['大刘', thisWeek, 0, 820],
+      ['上周冠军（不该出现）', thisWeek - 1, 140000, 2000],
+    ];
+    if (friendMode === 20) {
+      for (let i = 0; i < 14; i++) list.push([`跑友 ${i + 1}`, thisWeek, 150000 + i * 4300, 2000]);
+    }
+    return list.map(([nickname, wk, t, d], i) => ({
+      openid: 'friend-' + i,
+      nickname,
+      avatarUrl: mockAvatar(nickname, i),
+      KVDataList: [{ key: 'week', value: JSON.stringify({ wk, t, d, ts: 0 }) }],
+    }));
+  }
+  const cloudGet = () => {
+    const raw = localStorage.getItem('md:cloud:week');
+    return raw ? [{ key: 'week', value: raw }] : [];
+  };
+  const later = (fn, ms = 120) => setTimeout(fn, ms); // 模拟网络延迟
+  const openWx = {
+    getSharedCanvas: () => sharedCanvas,
+    onMessage(cb) {
+      onOpenMessage = cb;
+      pendingMessages.splice(0).forEach((m) => setTimeout(() => cb(m), 0));
+    },
+    createImage: () => new Image(),
+    getUserCloudStorage({ success, complete }) {
+      later(() => {
+        if (success) success({ KVDataList: cloudGet() });
+        if (complete) complete();
+      });
+    },
+    setUserCloudStorage({ KVDataList, success, complete }) {
+      later(() => {
+        KVDataList.forEach((kv) => localStorage.setItem('md:cloud:' + kv.key, kv.value));
+        if (success) success({});
+        if (complete) complete();
+      });
+    },
+    getUserInfo({ success, complete }) {
+      later(() => {
+        // self=noid：模拟拿不到自己 openId 的情况（榜单要靠别的办法认出哪一行是自己）
+        const info = { nickName: '我自己', avatarUrl: mockAvatar('我', 6) + (opts.self === 'noid' ? '#other-size' : '') };
+        if (opts.self !== 'noid') info.openId = 'self';
+        if (success) success({ data: [info] });
+        if (complete) complete();
+      });
+    },
+    getFriendCloudStorage({ success, fail, complete }) {
+      later(() => {
+        if (friendAuth !== 'granted') {
+          if (fail) fail({ errMsg: 'getFriendCloudStorage:fail auth deny' });
+        } else if (friendMode === 'fail') {
+          if (fail) fail({ errMsg: 'getFriendCloudStorage:fail game appid no privacy api permission' });
+        } else if (success) {
+          const data = mockFriends();
+          const mine = cloudGet();
+          if (mine.length) data.push({ openid: 'self', nickname: '我自己', avatarUrl: mockAvatar('我', 6), KVDataList: mine });
+          success({ data });
+        }
+        if (complete) complete();
+      }, 260);
+    },
+  };
+  fetch(ASSET_BASE + 'openDataContext/index.js')
+    .then((r) => r.text())
+    .then((code) => new Function('wx', code)(openWx))
+    .catch((e) => console.error('开放数据域加载失败', e));
 })();

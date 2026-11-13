@@ -1,6 +1,6 @@
 // 游戏主体：场景搭建、状态机、玩家与对手逻辑、跟拍相机
 import * as THREE from 'three';
-import { AID_STATIONS, LANE_W, PLAYER, PLAYER_MODEL, RACE_LENGTH, RIVALS, STAGES, clamp, lerp, stageBlend, stageIndexAt } from './config.js';
+import { ACTIVE_RIVALS, AID_STATIONS, LANE_W, PLAYER, PLAYER_MODEL, RACE_LENGTH, STAGES, clamp, lerp, stageBlend, stageIndexAt } from './config.js';
 import { cx, py, grade, heading } from './track.js';
 import { Terrain } from './terrain.js';
 import { Environment } from './sky.js';
@@ -11,7 +11,8 @@ import { Input } from './input.js';
 import { Audio } from './audio.js';
 import { Dust } from './particles.js';
 import { getPropAssets } from './props.js';
-import { createCanvas, loadData, saveData, vibrate, options } from './platform.js';
+import { createCanvas, loadData, saveData, vibrate, options, openFriendSetting } from './platform.js';
+import { submitRace, weekBest, inviteFriends } from './social.js';
 
 const CAM_BACK = 5.8;
 const CAM_UP = 2.75;
@@ -99,8 +100,8 @@ export class Game {
       itemPtr: 0,
     };
 
-    // 对手
-    this.rivals = RIVALS.map((cfg) => ({ cfg, runner: null, s: cfg.start, speed: 0, lane: cfg.lane, laneX: cfg.lane * LANE_W, y: 0, jumpT: -1, slideT: 0, rowPtr: 0, finishTime: 0 }));
+    // 电脑对手（config.js 里的 RIVALS_ENABLED 关掉时这里是空的，赛道上只有玩家自己）
+    this.rivals = ACTIVE_RIVALS.map((cfg) => ({ cfg, runner: null, s: cfg.start, speed: 0, lane: cfg.lane, laneX: cfg.lane * LANE_W, y: 0, jumpT: -1, slideT: 0, rowPtr: 0, finishTime: 0 }));
 
     this.hud = new Hud(screen);
     this.audio = new Audio();
@@ -155,8 +156,10 @@ export class Game {
   }
 
   refreshScreen() {
-    if (this.state === 'title') this.hud.showTitle(this.best);
-    else if (this.paused) this.hud.showPause();
+    if (this.state === 'title') {
+      if (this.hud.screenMode === 'board') this.hud.showLeaderboard();
+      else this.hud.showTitle(this.best, this.assets);
+    } else if (this.paused) this.hud.showPause();
     else if (this.result && (this.state === 'finished' || this.state === 'failed') && this.endTimer <= 0) this.hud.showResult(this.result);
     if (this.state !== 'title') this.hud.setRaceHudVisible(true);
   }
@@ -166,7 +169,7 @@ export class Game {
   loadRunners() {
     this.assets = 'loading';
     if (this.state === 'title') this.hud.showTitle(this.best, this.assets);
-    loadRunnerLibrary([PLAYER_MODEL, ...RIVALS.map((cfg) => cfg.model)])
+    loadRunnerLibrary([PLAYER_MODEL, ...ACTIVE_RIVALS.map((cfg) => cfg.model)])
       .then((lib) => {
         const make = (holder, model, phase, name) => {
           const r = new Runner(lib, model, { phase });
@@ -186,7 +189,8 @@ export class Game {
         this.assets = 'error';
       })
       .then(() => {
-        if (this.state === 'title') this.hud.showTitle(this.best, this.assets);
+        // 正在看好友榜就不打断，返回首页时再按最新的加载状态画
+        if (this.state === 'title' && this.hud.screenMode !== 'board') this.hud.showTitle(this.best, this.assets);
       });
   }
 
@@ -240,6 +244,9 @@ export class Game {
     }
     this.raceTime = 0;
     this.worldTime = 0;
+    // 没有电脑对手时，顶部显示这一周要超过的成绩
+    const wb = weekBest();
+    this.weekText = wb.t > 0 ? `本周最佳 ${formatTime(wb.t / 1000)}` : wb.d > 0 ? `本周最远 ${wb.d} m` : '本周首跑';
     this.stage = stageIndexAt(p.s);
     this.result = null;
     this.endTimer = 0;
@@ -311,8 +318,10 @@ export class Game {
       saveData('best', this.best);
     }
     this.finalRank = rank;
-    this.result = { finished: true, time: this.raceTime, rank, total: this.rivals.length + 1, avgSpeed: RACE_LENGTH / this.raceTime, bestCombo: p.bestCombo, hits: p.hits, peaks: p.peaks, distance: RACE_LENGTH, stage: STAGES.length - 1, best: this.best, isRecord };
-    this.hud.toast(rank === 1 ? '冲线！第 1 名' : `冲线！第 ${rank} 名`, formatTime(this.raceTime), { size: 36, color: '#ffc247', duration: 2.3 });
+    const improved = this.submitWeek(true);
+    this.result = { finished: true, time: this.raceTime, rank, total: this.rivals.length + 1, avgSpeed: RACE_LENGTH / this.raceTime, bestCombo: p.bestCombo, hits: p.hits, peaks: p.peaks, distance: RACE_LENGTH, stage: STAGES.length - 1, best: this.best, isRecord, weekBest: improved };
+    const head = !this.rivals.length ? (improved ? '冲线！本周最佳' : '冲线！') : rank === 1 ? '冲线！第 1 名' : `冲线！第 ${rank} 名`;
+    this.hud.toast(head, formatTime(this.raceTime), { size: 36, color: '#ffc247', duration: 2.3 });
     this.audio.finish();
     vibrate(true);
   }
@@ -321,10 +330,18 @@ export class Game {
     const p = this.player;
     this.state = 'failed';
     this.endTimer = 3.0; // 减速、倒地之后再弹成绩
-    this.result = { finished: false, time: this.raceTime, rank: 0, total: this.rivals.length + 1, avgSpeed: p.s / Math.max(1, this.raceTime), bestCombo: p.bestCombo, hits: p.hits, peaks: p.peaks, distance: p.s, stage: this.stage, best: this.best, isRecord: false };
+    const improved = this.submitWeek(false);
+    this.result = { finished: false, time: this.raceTime, rank: 0, total: this.rivals.length + 1, avgSpeed: p.s / Math.max(1, this.raceTime), bestCombo: p.bestCombo, hits: p.hits, peaks: p.peaks, distance: p.s, stage: this.stage, best: this.best, isRecord: false, weekBest: improved };
     this.hud.toast('体力耗尽', '跑不动了…', { size: 40, color: '#ff6b5a', duration: 1.9 });
     this.audio.fail();
     vibrate(true);
+  }
+
+  // 把这一局的成绩记到本周最佳里，并上报给微信好友榜；返回这一局有没有刷新本周最佳
+  submitWeek(finished) {
+    // 调试用的自动驾驶成绩不上榜
+    if (this.autopilot) return false;
+    return submitRace(finished, this.raceTime, this.player.s).improved;
   }
 
   buildStandings() {
@@ -413,7 +430,8 @@ export class Game {
     else if (name === 'pause') {
       if (this.state === 'running' || this.state === 'countdown') this.togglePause();
     } else if (name === 'confirm') {
-      if (this.state === 'title') this.press(this.assets === 'error' ? 'retry' : 'start');
+      if (this.hud.screenMode === 'board') this.press('back');
+      else if (this.state === 'title') this.press(this.assets === 'error' ? 'retry' : 'start');
       else if (this.paused) this.press('resume');
       else if (this.hud.screenMode === 'result') this.press('restart');
     }
@@ -448,6 +466,20 @@ export class Game {
         break;
       case 'gel':
         this.useGel();
+        break;
+      case 'board':
+        // 首页的"本周好友榜"
+        if (this.state === 'title') this.hud.showLeaderboard();
+        break;
+      case 'back':
+        if (this.state === 'title') this.hud.showTitle(this.best, this.assets);
+        break;
+      case 'share':
+        inviteFriends();
+        break;
+      case 'auth':
+        // 之前拒绝过"使用你的微信朋友信息"：去设置页打开，回来后重画榜单
+        openFriendSetting(() => this.refreshScreen());
         break;
     }
   }
@@ -509,7 +541,7 @@ export class Game {
         if (this.endTimer > 0) {
           this.endTimer -= dt;
           if (this.endTimer <= 0) {
-            this.result.standings = this.buildStandings();
+            if (this.rivals.length) this.result.standings = this.buildStandings();
             hud.setRaceHudVisible(false);
             hud.showResult(this.result);
           }
@@ -565,6 +597,7 @@ export class Game {
     if (this.state === 'finished') rank = this.finalRank;
     let gapText;
     if (this.state === 'finished') gapText = '已完赛';
+    else if (!this.rivals.length) gapText = this.weekText;
     else if (rank === 1) gapText = behindGap < Infinity ? `领先 ${Math.max(1, Math.round(behindGap))}m` : '领先';
     else gapText = `距前方 ${Math.max(1, Math.round(aheadGap))}m`;
     return {

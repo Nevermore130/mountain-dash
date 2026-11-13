@@ -185,6 +185,11 @@ export const RIVALS = [
   { name: '小野', model: 'xiaoye', color: 0xd9384f, lane: 0, start: 2.3, curve: [1.16, 1.14, 1.097, 1.055, 1.03, 1.022] },
 ];
 
+// 电脑对手的开关。现在的玩法是和微信好友比本周成绩，赛道上不放电脑对手；
+// 相关逻辑（避障 AI、名次、成绩榜）都还在，改成 true 就恢复三个电脑对手
+export const RIVALS_ENABLED = false;
+export const ACTIVE_RIVALS = RIVALS_ENABLED ? RIVALS : [];
+
 // 补给站：每个赛段开头不远处一个，三条跑线各放一样补给，只能拿一样
 export const AID_STATIONS = STAGES.slice(1).map((st) => st.from + 70);
 

@@ -1,6 +1,7 @@
 // 入口：创建渲染器、主循环、自适应画质
 import * as THREE from 'three';
-import { mainCanvas, getScreen, getBenchmarkLevel, WX, G, raf, options } from './platform.js';
+import { mainCanvas, getScreen, getBenchmarkLevel, WX, G, raf, options, setupShareMenu } from './platform.js';
+import { shareInfo } from './social.js';
 import { Game } from './game.js';
 
 // 画质档位：帧率不够时逐级下调
@@ -90,9 +91,9 @@ function boot() {
   }
   try {
     if (WX.setKeepScreenOn) WX.setKeepScreenOn({ keepScreenOn: true });
-    if (WX.showShareMenu) WX.showShareMenu({ withShareTicket: false });
-    if (WX.onShareAppMessage) WX.onShareAppMessage(() => ({ title: '山野疾驰：来跑一场 2000 米的山径越野赛' }));
   } catch (e) {}
+  // 右上角菜单的转发：文案里带上自己本周的成绩
+  setupShareMenu(shareInfo);
 
   // 帧率统计，用于自适应画质
   let accT = 0;

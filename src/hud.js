@@ -1,8 +1,10 @@
 // HUD 与界面：用 2D 离屏画布绘制，再作为贴图叠在 3D 画面之上
 // 所有布局都在"设计坐标"里完成：宽度固定 390，纵向按屏幕比例延伸
 import * as THREE from 'three';
-import { createCanvas } from './platform.js';
-import { STAGES, RACE_LENGTH, RIVALS, PLAYER } from './config.js';
+import { createCanvas, getSharedCanvas } from './platform.js';
+import { STAGES, RACE_LENGTH, ACTIVE_RIVALS, PLAYER } from './config.js';
+import { formatTime, formatPace } from './format.js';
+import { showFriendBoard, hideFriendBoard, weekBest } from './social.js';
 
 const DW = 390;
 const ORANGE = '#ff6a13';
@@ -16,21 +18,7 @@ const CREDITS = [
 ];
 const FONT = '"PingFang SC", "Helvetica Neue", Helvetica, Arial, sans-serif';
 
-export function formatTime(t) {
-  const m = Math.floor(t / 60);
-  const s = t - m * 60;
-  const ss = Math.floor(s);
-  const cs = Math.floor((s - ss) * 100);
-  return `${m < 10 ? '0' : ''}${m}:${ss < 10 ? '0' : ''}${ss}.${cs < 10 ? '0' : ''}${cs}`;
-}
-
-export function formatPace(speed) {
-  if (!(speed > 0.8)) return `-'--"`;
-  const sec = Math.round(1000 / speed);
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
-  return `${m}'${s < 10 ? '0' : ''}${s}"`;
-}
+export { formatTime, formatPace };
 
 function font(size, { bold = true, italic = false } = {}) {
   return `${italic ? 'italic ' : ''}${bold ? 'bold ' : ''}${size}px ${FONT}`;
@@ -188,6 +176,75 @@ class Layer {
   }
 }
 
+// 好友排行榜：内容由开放数据域画在共享画布上，这里只负责把那张画布当贴图摆到界面里
+class BoardLayer {
+  constructor(hud) {
+    this.hud = hud;
+    this.canvas = getSharedCanvas();
+    this.texture = null;
+    this.uniforms = { map: { value: null }, opacity: { value: 1 } };
+    this.material = new THREE.ShaderMaterial({
+      uniforms: this.uniforms,
+      vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: 'uniform sampler2D map; uniform float opacity; varying vec2 vUv; void main(){ vec4 c = texture2D(map, vUv); gl_FragColor = vec4(c.rgb, c.a * opacity); }',
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    });
+    this.mesh = new THREE.Mesh(hud.quad, this.material);
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = 6;
+    this.mesh.visible = false;
+    hud.scene.add(this.mesh);
+    this.acc = 0;
+  }
+
+  // 把榜单摆到设计坐标 (x, y, w, h)；返回开放数据域绘制时要用的尺寸，当前环境没有开放数据域时返回 null
+  show(x, y, w, h) {
+    if (!this.canvas) return null;
+    const hud = this.hud;
+    const k = hud.u * hud.density;
+    const pw = Math.max(2, Math.round(w * k));
+    const ph = Math.max(2, Math.round(h * k));
+    if (this.canvas.width !== pw || this.canvas.height !== ph) {
+      // 共享画布的宽高只能在主域设置；改了尺寸内容会被清空，贴图也要重建
+      this.canvas.width = pw;
+      this.canvas.height = ph;
+      if (this.texture) this.texture.dispose();
+      this.texture = null;
+    }
+    if (!this.texture) {
+      // 非 2 的幂贴图：不生成 mipmap、线性过滤、边缘钳制（WebGL1 的要求）
+      const t = new THREE.CanvasTexture(this.canvas);
+      t.colorSpace = THREE.NoColorSpace;
+      t.generateMipmaps = false;
+      t.minFilter = THREE.LinearFilter;
+      t.magFilter = THREE.LinearFilter;
+      this.texture = t;
+      this.uniforms.map.value = t;
+    }
+    this.mesh.scale.set(w * hud.u, h * hud.u, 1);
+    this.mesh.position.set((x + w / 2) * hud.u, hud.H - (y + h / 2) * hud.u, 0);
+    this.mesh.visible = true;
+    this.acc = 1;
+    return { w, h, scale: pw / w };
+  }
+
+  hide() {
+    this.mesh.visible = false;
+  }
+
+  // 主域不知道开放数据域什么时候画完（头像是陆续加载出来的），显示期间定时把画布重新传给显卡
+  update(dt) {
+    if (!this.mesh.visible || !this.texture) return;
+    this.acc += dt;
+    if (this.acc >= 0.1) {
+      this.acc = 0;
+      this.texture.needsUpdate = true;
+    }
+  }
+}
+
 const VIGNETTE_FRAG = /* glsl */ `
 uniform vec3 uColor;
 uniform float uStrength;
@@ -234,6 +291,7 @@ export class Hud {
     this.vignette.frustumCulled = false;
     this.vignette.renderOrder = -1;
     this.scene.add(this.vignette);
+    this.board = new BoardLayer(this);
 
     this.resize(screen);
   }
@@ -320,6 +378,7 @@ export class Hud {
       this._drawMid(d);
     }
     this._animateToast(dt);
+    this.board.update(dt);
   }
 
   _drawTop(d) {
@@ -393,21 +452,25 @@ export class Hud {
     text(c, '时间', DW / 2, y0 + 14.5, 10, { align: 'center', bold: false, color: 'rgba(255,255,255,0.85)', shadow: false });
     text(c, formatTime(d.time), DW / 2 - 3, y0 + 52, 52, { align: 'center', italic: true });
 
-    // 名次
+    // 名次（有电脑对手时才有）；下面的小标签：和前后对手的差距，或者本周要超过的成绩
     const ry = y0 + 94;
-    c.font = font(26, { italic: true });
-    const w1 = c.measureText(String(d.rank)).width;
-    c.font = font(13);
-    const w2 = c.measureText(`/${d.total}`).width;
-    const rx = DW / 2 - (w1 + w2 + 2) / 2;
-    text(c, String(d.rank), rx, ry, 26, { italic: true, color: ORANGE });
-    text(c, `/${d.total}`, rx + w1 + 3, ry + 4, 13, { color: '#fff' });
+    const ranked = d.total > 1;
+    if (ranked) {
+      c.font = font(26, { italic: true });
+      const w1 = c.measureText(String(d.rank)).width;
+      c.font = font(13);
+      const w2 = c.measureText(`/${d.total}`).width;
+      const rx = DW / 2 - (w1 + w2 + 2) / 2;
+      text(c, String(d.rank), rx, ry, 26, { italic: true, color: ORANGE });
+      text(c, `/${d.total}`, rx + w1 + 3, ry + 4, 13, { color: '#fff' });
+    }
+    const gy = ranked ? ry + 15 : ry - 10;
     c.fillStyle = 'rgba(20,23,26,0.6)';
     c.font = font(10, { bold: false });
     const gw = c.measureText(d.gapText).width + 14;
-    rrect(c, DW / 2 - gw / 2, ry + 15, gw, 17, 3);
+    rrect(c, DW / 2 - gw / 2, gy, gw, 17, 3);
     c.fill();
-    text(c, d.gapText, DW / 2, ry + 23.5, 10, { align: 'center', bold: false, shadow: false });
+    text(c, d.gapText, DW / 2, gy + 8.5, 10, { align: 'center', bold: false, shadow: false });
 
     // 配速
     text(c, '游戏配速', 16, y0 + 84, 10.5, { bold: false, color: 'rgba(255,255,255,0.86)' });
@@ -611,7 +674,7 @@ export class Hud {
     // 对手位置
     d.rivals.forEach((rs, i) => {
       const f = Math.max(0, Math.min(1, rs / RACE_LENGTH));
-      c.fillStyle = '#' + RIVALS[i].color.toString(16).padStart(6, '0');
+      c.fillStyle = '#' + ACTIVE_RIVALS[i].color.toString(16).padStart(6, '0');
       c.beginPath();
       c.arc(x0 + (x1 - x0) * f, py, 3.6, 0, Math.PI * 2);
       c.fill();
@@ -689,6 +752,7 @@ export class Hud {
 
   updateToastOnly(dt) {
     this._animateToast(dt);
+    this.board.update(dt);
   }
 
   // ---------------- 暗角 / 受击闪红 ----------------
@@ -725,12 +789,35 @@ export class Hud {
     this.screenMode = '';
     this.buttons = [];
     this.layers.screen.mesh.visible = false;
+    this._hideBoard();
+  }
+
+  // 在界面上划出一块区域显示好友榜（榜单本身由开放数据域绘制）
+  _placeBoard(c, x, y, w, h) {
+    const info = this.board.show(x, y, w, h);
+    if (!info) {
+      // 很老的微信版本没有开放数据域：原地写一行说明
+      text(c, '本周好友榜', x, y + 13, 13.5, { shadow: false });
+      text(c, '当前微信版本不支持好友排行榜', x + w / 2, y + h / 2 + 10, 12, { align: 'center', bold: false, color: 'rgba(255,255,255,0.6)', shadow: false });
+      return;
+    }
+    showFriendBoard(info, (ok) => {
+      // 用户拒绝过"使用你的微信朋友信息"：整块榜单变成一个按钮，点了去设置页打开
+      if (!ok) this.buttons.push({ id: 'auth', x, y, w, h });
+    });
+  }
+
+  _hideBoard() {
+    if (!this.board.mesh.visible) return;
+    this.board.hide();
+    hideFriendBoard();
   }
 
   // status: 人物素材的加载状态 'loading' | 'ready' | 'error'
   showTitle(best, status = 'ready') {
     this.screenMode = 'title';
     this.buttons = [];
+    this._hideBoard();
     const L = this.layers.screen;
     L.mesh.visible = true;
     const c = L.begin();
@@ -758,7 +845,8 @@ export class Hud {
     c.fill();
     text(c, '山野疾驰', 68, ty, 58, { italic: true });
     text(c, 'M O U N T A I N   D A S H', 70, ty + 44, 13, { color: 'rgba(255,255,255,0.86)' });
-    text(c, '2000 米山径 · 6 个赛段 · 3 位对手', 70, ty + 70, 13.5, { bold: false, color: 'rgba(255,255,255,0.92)' });
+    const intro = ACTIVE_RIVALS.length ? `2000 米山径 · 6 个赛段 · ${ACTIVE_RIVALS.length} 位对手` : '2000 米山径 · 6 个赛段 · 和微信好友比本周成绩';
+    text(c, intro, 70, ty + 70, 13.5, { bold: false, color: 'rgba(255,255,255,0.92)' });
     const bestText = best ? `个人最佳  ${formatTime(best)}` : '还没有完赛记录';
     c.font = font(12.5);
     const bwid = c.measureText(bestText).width + 24;
@@ -769,6 +857,16 @@ export class Hud {
     c.lineWidth = 1;
     c.stroke();
     text(c, bestText, 80, ty + 101.5, 12.5, { color: best ? '#ffd9bf' : 'rgba(255,255,255,0.7)', shadow: false });
+    // 好友榜入口
+    const rankText = '本周好友榜  ›';
+    c.font = font(12.5);
+    const rwid = c.measureText(rankText).width + 24;
+    const rx0 = 68 + bwid + 8;
+    c.fillStyle = ORANGE;
+    rrect(c, rx0, ty + 88, rwid, 26, 5);
+    c.fill();
+    text(c, rankText, rx0 + 12, ty + 101.5, 12.5, { shadow: false });
+    this.buttons.push({ id: 'board', x: rx0, y: ty + 88, w: rwid, h: 26 });
 
     // 操作说明
     const cy = Hd - 262;
@@ -845,6 +943,7 @@ export class Hud {
   showPause() {
     this.screenMode = 'pause';
     this.buttons = [];
+    this._hideBoard();
     const L = this.layers.screen;
     L.mesh.visible = true;
     const c = L.begin();
@@ -860,8 +959,61 @@ export class Hud {
     L.end();
   }
 
+  // 一张居中的深色卡片，返回它的左上角
+  _card(c, cw, ch) {
+    const cx0 = (DW - cw) / 2;
+    const cy0 = Math.max(this.T + this.rowH + 16, (this.Hd - ch) / 2 - 10);
+    c.fillStyle = 'rgba(18,20,23,0.94)';
+    rrect(c, cx0, cy0, cw, ch, 18);
+    c.fill();
+    c.strokeStyle = 'rgba(255,255,255,0.12)';
+    c.lineWidth = 1;
+    c.stroke();
+    c.fillStyle = ORANGE;
+    rrect(c, cx0 + 24, cy0, 64, 5, 2);
+    c.fill();
+    return { cx0, cy0 };
+  }
+
+  // 首页点进来的"本周好友榜"
+  showLeaderboard() {
+    this.screenMode = 'board';
+    this.buttons = [];
+    const L = this.layers.screen;
+    L.mesh.visible = true;
+    const c = L.begin();
+    c.fillStyle = 'rgba(8,10,12,0.66)';
+    c.fillRect(0, 0, DW, this.Hd);
+
+    const cw = 334;
+    const ch = 574;
+    const { cx0, cy0 } = this._card(c, cw, ch);
+    const lx = cx0 + 24;
+    const rxx = cx0 + cw - 24;
+    text(c, '和好友比一比', lx, cy0 + 42, 28, { italic: true, shadow: false });
+    text(c, '只统计本周跑过的微信好友 · 完赛比用时，没完赛比距离', lx, cy0 + 70, 11, { bold: false, color: 'rgba(255,255,255,0.65)', shadow: false });
+
+    // 我的本周最佳
+    const my = weekBest();
+    const ty = cy0 + 92;
+    c.fillStyle = 'rgba(255,255,255,0.06)';
+    rrect(c, lx, ty, cw - 48, 56, 10);
+    c.fill();
+    text(c, '我的本周最佳', lx + 14, ty + 28, 12, { bold: false, color: 'rgba(255,255,255,0.7)', shadow: false });
+    if (my.t > 0) text(c, formatTime(my.t / 1000), rxx - 14, ty + 28.5, 26, { align: 'right', italic: true, shadow: false });
+    else text(c, my.d > 0 ? `未完赛 · ${my.d} m` : '本周还没跑', rxx - 14, ty + 28.5, 15, { align: 'right', color: 'rgba(255,255,255,0.75)', shadow: false });
+
+    this._placeBoard(c, lx, cy0 + 164, cw - 48, 272);
+
+    const byy = cy0 + ch - 122;
+    this._button(c, 'share', '邀 请 好 友', lx, byy, cw - 48, 52, true);
+    this._button(c, 'back', '返回', lx, byy + 62, cw - 48, 42, false);
+    L.end();
+  }
+
   /**
-   * @param r { finished, time, rank, total, avgSpeed, bestCombo, hits, distance, best, isRecord, standings: [{name, text, me}] }
+   * @param r { finished, time, rank, total, avgSpeed, bestCombo, hits, peaks, distance, best, isRecord, weekBest,
+   *            standings: [{name, text, me}]（有电脑对手时才有；没有就在同一块位置显示微信好友本周榜） }
    */
   showResult(r) {
     this.screenMode = 'result';
@@ -873,31 +1025,37 @@ export class Hud {
     c.fillStyle = 'rgba(8,10,12,0.6)';
     c.fillRect(0, 0, DW, Hd);
 
+    const ranked = r.total > 1 && !!r.standings;
     const cw = 334;
-    const ch = 500;
-    const cx0 = (DW - cw) / 2;
-    const cy0 = Math.max(this.T + this.rowH + 16, (Hd - ch) / 2 - 10);
-    c.fillStyle = 'rgba(18,20,23,0.94)';
-    rrect(c, cx0, cy0, cw, ch, 18);
-    c.fill();
-    c.strokeStyle = 'rgba(255,255,255,0.12)';
-    c.lineWidth = 1;
-    c.stroke();
-    c.fillStyle = ORANGE;
-    rrect(c, cx0 + 24, cy0, 64, 5, 2);
-    c.fill();
+    const ch = ranked ? 500 : 572;
+    const { cx0, cy0 } = this._card(c, cw, ch);
 
     const lx = cx0 + 24;
     const rxx = cx0 + cw - 24;
+    // 这一局刷新了本周最佳：右上角挂一个标签（好友榜上的成绩也随之更新）
+    const weekTag = () => {
+      if (!r.weekBest) return;
+      c.fillStyle = 'rgba(255,194,71,0.16)';
+      rrect(c, rxx - 78, cy0 + 32, 78, 26, 13);
+      c.fill();
+      c.strokeStyle = '#ffc247';
+      c.lineWidth = 1;
+      c.stroke();
+      text(c, '本周最佳', rxx - 39, cy0 + 45.5, 12.5, { align: 'center', color: '#ffc247', shadow: false });
+    };
     if (r.finished) {
-      text(c, r.rank === 1 ? '跑山之王' : '顺利完赛', lx, cy0 + 44, 30, { italic: true, shadow: false });
-      text(c, r.rank === 1 ? '第一个冲过终点线' : '翻过了六道山梁', lx, cy0 + 72, 12, { bold: false, color: 'rgba(255,255,255,0.7)', shadow: false });
-      text(c, `${r.rank}`, rxx - 22, cy0 + 50, 58, { align: 'right', italic: true, color: r.rank === 1 ? '#ffc247' : ORANGE, shadow: false });
-      text(c, `/${r.total}`, rxx, cy0 + 62, 16, { align: 'right', color: 'rgba(255,255,255,0.8)', shadow: false });
+      const champion = ranked && r.rank === 1;
+      text(c, champion ? '跑山之王' : '顺利完赛', lx, cy0 + 44, 30, { italic: true, shadow: false });
+      text(c, champion ? '第一个冲过终点线' : '翻过了六道山梁', lx, cy0 + 72, 12, { bold: false, color: 'rgba(255,255,255,0.7)', shadow: false });
+      if (ranked) {
+        text(c, `${r.rank}`, rxx - 22, cy0 + 50, 58, { align: 'right', italic: true, color: r.rank === 1 ? '#ffc247' : ORANGE, shadow: false });
+        text(c, `/${r.total}`, rxx, cy0 + 62, 16, { align: 'right', color: 'rgba(255,255,255,0.8)', shadow: false });
+      } else weekTag();
     } else {
       text(c, '体力耗尽', lx, cy0 + 44, 30, { italic: true, shadow: false, color: '#ff6b5a' });
       text(c, `止步 ${Math.floor(r.distance)} m · ${STAGES[r.stage].name}`, lx, cy0 + 72, 12, { bold: false, color: 'rgba(255,255,255,0.7)', shadow: false });
-      text(c, 'DNF', rxx, cy0 + 50, 34, { align: 'right', italic: true, color: 'rgba(255,255,255,0.35)', shadow: false });
+      if (ranked || !r.weekBest) text(c, 'DNF', rxx, cy0 + 50, 34, { align: 'right', italic: true, color: 'rgba(255,255,255,0.35)', shadow: false });
+      else weekTag();
     }
 
     // 用时
@@ -932,10 +1090,20 @@ export class Hud {
       text(c, v, x + 2, sy + 33, 17, { italic: true, shadow: false });
     });
 
-    // 排名
+    // 排名：有电脑对手时是这一局的名次；否则是微信好友的本周榜
     const py0 = sy + 62;
     c.fillStyle = 'rgba(255,255,255,0.1)';
     c.fillRect(lx, py0 - 8, cw - 48, 1);
+    const byy = cy0 + ch - 122;
+    if (!ranked) {
+      this._placeBoard(c, lx, py0, cw - 48, 182);
+      const half = (cw - 48 - 10) / 2;
+      this._button(c, 'restart', '再 跑 一 次', lx, byy, cw - 48, 52, true);
+      this._button(c, 'share', '邀请好友来比', lx, byy + 62, half, 42, false);
+      this._button(c, 'home', '返回首页', lx + half + 10, byy + 62, half, 42, false);
+      L.end();
+      return;
+    }
     r.standings.forEach((row, i) => {
       const y = py0 + 12 + i * 27;
       if (row.me) {
@@ -952,7 +1120,7 @@ export class Hud {
       text(c, row.text, rxx, y, 12.5, { align: 'right', bold: false, color: 'rgba(255,255,255,0.8)', shadow: false });
     });
 
-    const byy = cy0 + ch - 122;
+    this._hideBoard();
     this._button(c, 'restart', '再 跑 一 次', cx0 + 24, byy, cw - 48, 52, true);
     this._button(c, 'home', '返回首页', cx0 + 24, byy + 62, cw - 48, 42, false);
     L.end();
