@@ -1,7 +1,7 @@
 // 和微信好友比成绩：本周最佳的记录与上报、好友榜的显示请求、邀请转发
 // 排名规则：完赛的排在没完赛的前面；都完赛比用时；都没完赛比跑了多远。每周一 0 点（北京时间）清零重来
-import { RACE_LENGTH } from './config.js';
-import { loadData, saveData, postOpenData, requestFriendAuth, shareAppMessage } from './platform.js';
+import { ENERGY, RACE_LENGTH } from './config.js';
+import { loadData, saveData, postOpenData, requestFriendAuth, shareAppMessage, onAppHide, onAppShow } from './platform.js';
 import { formatTime } from './format.js';
 
 // 第几周：以北京时间周一 0 点为界，这样所有好友看到的是同一周（1970-01-01 是周四，加 3 天对齐到周一）
@@ -67,5 +67,43 @@ export function shareInfo() {
 }
 
 export function inviteFriends() {
+  shareAppMessage(shareInfo());
+}
+
+// ---------------- 转发给好友换体力值 ----------------
+// 微信不会告诉游戏"转发有没有发出去"（转发成功的回调早就取消了），只能估计：
+// 拉起转发面板时游戏会切到后台，回到游戏时看隔了多久——很快就回来多半是点了取消。
+const NO_HIDE_TIMEOUT = 1500; // 拉起转发后这么久游戏都没切到后台：当前环境不报这个事件，没法判断，直接算转发了
+
+let sharing = null; // 正在等结果的一次转发 { cb, at, hidden, timer }
+let watching = false;
+
+function settleShare(result) {
+  const s = sharing;
+  if (!s) return;
+  sharing = null;
+  clearTimeout(s.timer);
+  s.cb(result);
+}
+
+function watchApp() {
+  if (watching) return;
+  watching = true;
+  onAppHide(() => {
+    if (!sharing) return;
+    sharing.hidden = true;
+    clearTimeout(sharing.timer);
+  });
+  onAppShow(() => {
+    if (sharing && sharing.hidden) settleShare(Date.now() - sharing.at >= ENERGY.shareMinSeconds * 1000 ? 'shared' : 'cancelled');
+  });
+}
+
+// 拉起转发给好友。必须在玩家点击之后调用。
+// cb(result)：'shared' 转发了；'cancelled' 很快就回来了，当作没有转发
+export function shareForEnergy(cb) {
+  if (sharing) return; // 连点只算一次
+  watchApp();
+  sharing = { cb, at: Date.now(), hidden: false, timer: setTimeout(() => settleShare('shared'), NO_HIDE_TIMEOUT) };
   shareAppMessage(shareInfo());
 }

@@ -163,6 +163,19 @@ export function shareAppMessage(info) {
   } catch (e) {}
 }
 
+// 游戏切到后台 / 回到前台时通知（拉起转发面板、看广告、切到别的聊天都会触发）
+export function onAppHide(fn) {
+  try {
+    if (WX.onHide) WX.onHide(fn);
+  } catch (e) {}
+}
+
+export function onAppShow(fn) {
+  try {
+    if (WX.onShow) WX.onShow(fn);
+  } catch (e) {}
+}
+
 // 右上角菜单里的"转发 / 分享到朋友圈"
 export function setupShareMenu(getInfo) {
   try {

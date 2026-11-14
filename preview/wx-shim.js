@@ -186,9 +186,28 @@
       friendAuth = 'granted';
       setTimeout(() => success && success({ authSetting: { 'scope.WxFriendInteraction': true } }), 0);
     },
+    // ---- 转发给好友（模拟）----
+    // 和真机一样：拉起转发面板时游戏切到后台（onHide），发送或取消后回到前台（onShow）。
+    // 预览地址加 share=nohide 模拟不报后台事件的环境（只记一笔，不弹面板）
     shareAppMessage(info) {
       window.__shared = info;
       console.log('[预览] 转发给好友：', info.title, info.query || '');
+      if (opts.share === 'nohide') return;
+      const close = () => {
+        shareBox.style.display = 'none';
+        showHandlers.forEach((cb) => cb({}));
+      };
+      shareBox.innerHTML =
+        '<div style="font-size:13px;opacity:.6">预览 · 模拟转发给好友</div>' +
+        '<div id="__shareTitle" style="font-size:16px;line-height:1.6;margin:20px 28px 26px;text-align:center"></div>' +
+        '<div><button id="__shareSend" style="font-size:15px;padding:10px 26px;border-radius:22px;border:0;background:#07c160;color:#fff;margin-right:12px">发送</button>' +
+        '<button id="__shareCancel" style="font-size:15px;padding:10px 26px;border-radius:22px;border:0;background:#444;color:#fff">取消</button></div>';
+      shareBox.querySelector('#__shareTitle').textContent = info.title || '';
+      shareBox.querySelector('#__shareSend').onclick = close;
+      shareBox.querySelector('#__shareCancel').onclick = close;
+      shareBox.style.display = 'flex';
+      window.__share = { close, visible: () => shareBox.style.display !== 'none' };
+      hideHandlers.forEach((cb) => cb({}));
     },
 
     // ---- 系统提示（模拟）----
@@ -290,6 +309,7 @@
   const mask = layer('inset:0;');
   const tipBox = layer('left:50%;top:46%;transform:translate(-50%,-50%);max-width:70%;padding:12px 18px;border-radius:8px;background:rgba(0,0,0,.78);font-size:14px;line-height:1.5;text-align:center;pointer-events:none;z-index:12;');
   const adBox = layer('inset:0;background:#111;flex-direction:column;align-items:center;justify-content:center;z-index:11;');
+  const shareBox = layer('inset:0;background:#1b1b1b;flex-direction:column;align-items:center;justify-content:center;z-index:11;');
   let tipTimer = 0;
   let adTimer = 0;
   window.__tips = [];

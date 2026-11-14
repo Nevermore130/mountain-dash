@@ -7,6 +7,9 @@ import { formatTime, formatPace } from './format.js';
 import { showFriendBoard, hideFriendBoard, weekBest } from './social.js';
 import { energyInfo } from './energy.js';
 
+// 体力值用完后，按钮和说明里怎么称呼"再来一局"的办法
+const REFILL = ENERGY.refill === 'ad' ? '看视频' : '邀请好友';
+
 const DW = 390;
 const ORANGE = '#ff6a13';
 const WATER = '#5cc4ff';
@@ -788,12 +791,12 @@ export class Hud {
     this.buttons.push({ id, x, y, w, h });
   }
 
-  // "开始比赛 / 再跑一次"的主按钮：按钮里写着今天还剩几点体力值；用完了就换成"看视频"
+  // "开始比赛 / 再跑一次"的主按钮：按钮里写着今天还剩几点体力值；用完了就换成"邀请好友"（或"看视频"）
   _playButton(c, id, label, x, y, w, h) {
     const e = energyInfo();
     if (!e.enabled) this._button(c, id, label, x, y, w, h, true);
     else if (e.left > 0) this._button(c, id, label, x, y, w, h, true, e.left > e.max ? `体力值 ${e.left}` : `今日体力值 ${e.left}/${e.max}`);
-    else this._button(c, id, '看视频 · 再跑一局', x, y, w, h, true, '今日体力值已用完');
+    else this._button(c, id, `${REFILL} · 再跑一局`, x, y, w, h, true, '今日体力值已用完');
   }
 
   hideScreen() {
@@ -927,7 +930,7 @@ export class Hud {
     c.fillRect(0, 0, DW, this.Hd);
 
     const rules = ['每一局的障碍和补给都会重新随机排布', '体力耗尽即退赛，每周最好的一次成绩计入好友榜'];
-    if (ENERGY.enabled) rules.push(`每局消耗 1 点体力值，每天 ${ENERGY.dailyFree} 点，用完可看视频再跑`);
+    if (ENERGY.enabled) rules.push(`每局消耗 1 点体力值，每天 ${ENERGY.dailyFree} 点，用完可${REFILL}再跑`);
     const cw = 334;
     const ch = 468 + rules.length * 19;
     const { cx0, cy0 } = this._card(c, cw, ch);
@@ -1008,7 +1011,7 @@ export class Hud {
     this._button(c, 'resume', '继 续 比 赛', 65, cy + 60, 260, 54, true);
     // 重新开始等于再开一局，也要消耗体力值
     const e = energyInfo();
-    const again = !e.enabled ? '重新开始' : e.left > 0 ? '重新开始 · 消耗 1 体力值' : '看视频 · 重新开始';
+    const again = !e.enabled ? '重新开始' : e.left > 0 ? '重新开始 · 消耗 1 体力值' : `${REFILL} · 重新开始`;
     this._button(c, 'restart', again, 65, cy + 130, 260, 46, false);
     this._button(c, 'home', '返回首页', 65, cy + 190, 260, 46, false);
     L.end();

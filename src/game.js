@@ -12,7 +12,7 @@ import { Audio } from './audio.js';
 import { Dust } from './particles.js';
 import { getPropAssets } from './props.js';
 import { createCanvas, loadData, saveData, vibrate, options, openFriendSetting, showTip } from './platform.js';
-import { submitRace, weekBest, inviteFriends } from './social.js';
+import { submitRace, weekBest, inviteFriends, shareForEnergy } from './social.js';
 import { useEnergy, addBonusEnergy } from './energy.js';
 import { showRewardedAd, onAdVisible } from './ads.js';
 
@@ -269,14 +269,19 @@ export class Game {
     this.hud.showTitle(this.best, this.assets);
   }
 
-  // 开一局比赛：消耗 1 点体力值；体力值用完了就先看一段激励视频，看完临时加一点再开
+  // 开一局比赛：消耗 1 点体力值；体力值用完了就先转发给好友（或看一段激励视频），完成后临时加一点再开
   tryStart() {
     // 调试用的自动驾驶不占体力值
     if (this.autopilot || useEnergy()) {
       this.startCountdown();
       return;
     }
-    showRewardedAd((result) => {
+    const refill = ENERGY.refill === 'ad' ? showRewardedAd : shareForEnergy;
+    refill((result) => {
+      if (result === 'cancelled') {
+        showTip('转发给好友后才能再跑一局');
+        return;
+      }
       if (result === 'skipped') {
         showTip('完整看完视频才能再跑一局');
         return;
