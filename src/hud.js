@@ -822,18 +822,20 @@ export class Hud {
     L.mesh.visible = true;
     const c = L.begin();
     const Hd = this.Hd;
-    let g = c.createLinearGradient(0, 0, 0, Hd * 0.42);
+    // 只压暗上下两头，中间留给赛道和选手
+    let g = c.createLinearGradient(0, 0, 0, Hd * 0.36);
     g.addColorStop(0, 'rgba(8,10,12,0.8)');
     g.addColorStop(1, 'rgba(8,10,12,0)');
     c.fillStyle = g;
-    c.fillRect(0, 0, DW, Hd * 0.42);
-    g = c.createLinearGradient(0, Hd * 0.5, 0, Hd);
+    c.fillRect(0, 0, DW, Hd * 0.36);
+    g = c.createLinearGradient(0, Hd - 330, 0, Hd);
     g.addColorStop(0, 'rgba(8,10,12,0)');
-    g.addColorStop(0.5, 'rgba(8,10,12,0.66)');
-    g.addColorStop(1, 'rgba(8,10,12,0.92)');
+    g.addColorStop(0.5, 'rgba(8,10,12,0.7)');
+    g.addColorStop(1, 'rgba(8,10,12,0.94)');
     c.fillStyle = g;
-    c.fillRect(0, Hd * 0.5, DW, Hd * 0.5);
+    c.fillRect(0, Hd - 330, DW, 330);
 
+    // 上面只放标题
     const ty = this.T + this.rowH + 58;
     c.fillStyle = ORANGE;
     c.beginPath();
@@ -847,96 +849,134 @@ export class Hud {
     text(c, 'M O U N T A I N   D A S H', 70, ty + 44, 13, { color: 'rgba(255,255,255,0.86)' });
     const intro = ACTIVE_RIVALS.length ? `2000 米山径 · 6 个赛段 · ${ACTIVE_RIVALS.length} 位对手` : '2000 米山径 · 6 个赛段 · 和微信好友比本周成绩';
     text(c, intro, 70, ty + 70, 13.5, { bold: false, color: 'rgba(255,255,255,0.92)' });
-    const bestText = best ? `个人最佳  ${formatTime(best)}` : '还没有完赛记录';
-    c.font = font(12.5);
-    const bwid = c.measureText(bestText).width + 24;
-    c.fillStyle = 'rgba(16,18,20,0.7)';
-    rrect(c, 68, ty + 88, bwid, 26, 5);
-    c.fill();
-    c.strokeStyle = 'rgba(255,106,19,0.8)';
-    c.lineWidth = 1;
-    c.stroke();
-    text(c, bestText, 80, ty + 101.5, 12.5, { color: best ? '#ffd9bf' : 'rgba(255,255,255,0.7)', shadow: false });
-    // 好友榜入口
-    const rankText = '本周好友榜  ›';
-    c.font = font(12.5);
-    const rwid = c.measureText(rankText).width + 24;
-    const rx0 = 68 + bwid + 8;
-    c.fillStyle = ORANGE;
-    rrect(c, rx0, ty + 88, rwid, 26, 5);
-    c.fill();
-    text(c, rankText, rx0 + 12, ty + 101.5, 12.5, { shadow: false });
-    this.buttons.push({ id: 'board', x: rx0, y: ty + 88, w: rwid, h: 26 });
 
-    // 操作说明
-    const cy = Hd - 262;
-    const items = [
+    // 下面从上到下：开始按钮、两个次要入口、一行小字
+    const bx = 45;
+    const bw = 300;
+    const by = Hd - 176;
+    const fy = by + 140; // 最底下那行小字
+
+    let hint = '左右滑动变道 · 上滑跳跃 · 下滑滑铲';
+    if (status === 'ready') {
+      this._button(c, 'start', '开 始 比 赛', bx, by, bw, 58, true);
+    } else if (status === 'error') {
+      this._button(c, 'retry', '加载失败 · 点击重试', bx, by, bw, 58, false);
+      hint = '人物素材没有加载成功，请检查后重试';
+    } else {
+      // 加载中：画一个不可点的按钮
+      c.fillStyle = 'rgba(18,20,23,0.7)';
+      rrect(c, bx, by, bw, 58, 29);
+      c.fill();
+      text(c, '正在加载选手…', DW / 2, by + 29.5, 16, { align: 'center', color: 'rgba(255,255,255,0.7)', shadow: false });
+      hint = '马上就好';
+    }
+    const half = (bw - 12) / 2;
+    this._button(c, 'board', '本周好友榜', bx, by + 72, half, 44, false);
+    this._button(c, 'help', '玩法说明', bx + half + 12, by + 72, half, 44, false);
+
+    // 最底下一行：跑过的人看自己的成绩，新玩家（或素材没加载好时）看提示
+    const wb = weekBest();
+    const stats = [];
+    if (best) stats.push(['个人最佳', formatTime(best)]);
+    if (wb.t > 0) stats.push(['本周最佳', formatTime(wb.t / 1000)]);
+    else if (wb.d > 0) stats.push(['本周最远', `${wb.d} m`]);
+    if (status !== 'ready' || !stats.length) {
+      text(c, hint, DW / 2, fy, 11, { align: 'center', bold: false, color: status === 'error' ? '#ffb4a8' : 'rgba(255,255,255,0.6)', shadow: false });
+    } else {
+      const gap = 26; // 两项之间的间隔，中间画一条细竖线
+      const parts = stats.map(([k, v]) => {
+        c.font = font(11.5, { bold: false });
+        const kw = c.measureText(k).width;
+        c.font = font(14, { italic: true });
+        return { k, v, kw, w: kw + 7 + c.measureText(v).width };
+      });
+      let sx = (DW - parts.reduce((sum, p) => sum + p.w, 0) - gap * (parts.length - 1)) / 2;
+      parts.forEach((p, i) => {
+        if (i > 0) {
+          c.fillStyle = 'rgba(255,255,255,0.3)';
+          c.fillRect(sx - gap / 2, fy - 7, 1, 14);
+        }
+        text(c, p.k, sx, fy, 11.5, { bold: false, color: 'rgba(255,255,255,0.65)', shadow: false });
+        text(c, p.v, sx + p.kw + 7, fy, 14, { italic: true, shadow: false });
+        sx += p.w + gap;
+      });
+    }
+    L.end();
+  }
+
+  // 首页点进来的"玩法说明"：手势、补给、规则和素材署名
+  showHelp() {
+    this.screenMode = 'help';
+    this.buttons = [];
+    this._hideBoard();
+    const L = this.layers.screen;
+    L.mesh.visible = true;
+    const c = L.begin();
+    c.fillStyle = 'rgba(8,10,12,0.66)';
+    c.fillRect(0, 0, DW, this.Hd);
+
+    const cw = 334;
+    const ch = 506;
+    const { cx0, cy0 } = this._card(c, cw, ch);
+    const lx = cx0 + 24;
+    const iw = cw - 48;
+    const dim = 'rgba(255,255,255,0.7)';
+    const line = (y) => {
+      c.fillStyle = 'rgba(255,255,255,0.1)';
+      c.fillRect(lx, y, iw, 1);
+    };
+    text(c, '玩法说明', lx, cy0 + 42, 28, { italic: true, shadow: false });
+    text(c, '跑完 2000 米山径，别让体力见底', lx, cy0 + 70, 12, { bold: false, color: dim, shadow: false });
+
+    // 四个手势
+    const gy = cy0 + 122;
+    const gestures = [
       ['left', '左滑', '向左变道'],
       ['right', '右滑', '向右变道'],
       ['up', '上滑', '跳过倒木'],
       ['down', '下滑', '滑铲钻过'],
     ];
-    items.forEach(([dir, a, b], i) => {
-      const x = 54 + i * 94;
-      c.fillStyle = 'rgba(16,18,20,0.66)';
+    gestures.forEach(([dir, a, b], i) => {
+      const x = lx + (iw / 4) * (i + 0.5);
+      c.fillStyle = 'rgba(255,255,255,0.07)';
       c.beginPath();
-      c.arc(x, cy, 23, 0, Math.PI * 2);
+      c.arc(x, gy, 23, 0, Math.PI * 2);
       c.fill();
-      c.strokeStyle = 'rgba(255,255,255,0.3)';
-      c.lineWidth = 1;
-      c.stroke();
-      arrow(c, x, cy, dir, 24, ORANGE);
-      text(c, a, x, cy + 40, 14, { align: 'center' });
-      text(c, b, x, cy + 58, 10.5, { align: 'center', bold: false, color: 'rgba(255,255,255,0.78)' });
+      arrow(c, x, gy, dir, 24, ORANGE);
+      text(c, a, x, gy + 40, 14, { align: 'center', shadow: false });
+      text(c, b, x, gy + 58, 10.5, { align: 'center', bold: false, color: dim, shadow: false });
     });
-    // 沿途补给说明：三种补给各用自己的颜色标出来
-    const tips = [
-      ['#ffb347', '能量胶', '回体力并加速'],
-      [WATER, '水', '攒满 3 瓶无敌冲刺'],
-      [POLE, '登山杖', '挡一次碰撞'],
-    ];
-    const tipY = Hd - 172;
-    c.font = font(10.5);
-    const widths = tips.map(([, a, b]) => {
-      c.font = font(10.5);
-      const wa = c.measureText(a).width;
-      c.font = font(10.5, { bold: false });
-      return [wa, c.measureText(b).width];
-    });
-    const tipGap = 14;
-    let tx0 = (DW - widths.reduce((sum, [wa, wb]) => sum + wa + 4 + wb, 0) - tipGap * (tips.length - 1)) / 2;
-    tips.forEach(([color, a, b], i) => {
-      text(c, a, tx0, tipY, 10.5, { color });
-      text(c, b, tx0 + widths[i][0] + 4, tipY, 10.5, { bold: false, color: 'rgba(255,255,255,0.78)' });
-      tx0 += widths[i][0] + 4 + widths[i][1] + tipGap;
-    });
-    text(c, '每一局的障碍和补给都会重新随机排布 · 体力耗尽即退赛', DW / 2, Hd - 188, 10.5, { align: 'center', bold: false, color: 'rgba(255,255,255,0.78)' });
+    line(cy0 + 204);
 
-    const by = Hd - 152;
-    let hint = '点击按钮开始 · 建议打开声音';
-    if (status === 'ready') {
-      this._button(c, 'start', '开 始 比 赛', 45, by, 300, 58, true);
-    } else if (status === 'error') {
-      this._button(c, 'retry', '加载失败 · 点击重试', 45, by, 300, 58, false);
-      hint = '人物素材没有加载成功，请检查后重试';
-    } else {
-      // 加载中：画一个不可点的按钮
-      c.fillStyle = 'rgba(18,20,23,0.7)';
-      rrect(c, 45, by, 300, 58, 29);
+    // 沿途补给：各用自己的颜色标出来
+    const supplies = [
+      ['#ffb347', '能量胶', '回复体力并加速'],
+      [WATER, '水', '攒满 3 瓶进入巅峰状态，无敌冲刺'],
+      [POLE, '登山杖', '挡下一次碰撞'],
+    ];
+    supplies.forEach(([color, a, b], i) => {
+      const y = cy0 + 230 + i * 32;
+      c.fillStyle = color;
+      c.beginPath();
+      c.arc(lx + 6, y, 4.5, 0, Math.PI * 2);
       c.fill();
-      text(c, '正在加载选手…', DW / 2, by + 29.5, 16, { align: 'center', color: 'rgba(255,255,255,0.7)', shadow: false });
-      hint = '马上就好';
-    }
-    text(c, hint, DW / 2, by + 78, 10.5, { align: 'center', bold: false, color: status === 'error' ? '#ffb4a8' : 'rgba(255,255,255,0.55)', shadow: false });
+      text(c, a, lx + 20, y, 13.5, { color, shadow: false });
+      text(c, b, lx + 76, y, 12, { bold: false, color: 'rgba(255,255,255,0.85)', shadow: false });
+    });
+    line(cy0 + 316);
+    text(c, '每一局的障碍和补给都会重新随机排布', lx, cy0 + 336, 11.5, { bold: false, color: dim, shadow: false });
+    text(c, '体力耗尽即退赛，每周最好的一次成绩计入好友榜', lx, cy0 + 355, 11.5, { bold: false, color: dim, shadow: false });
 
     // 素材署名（帽子是 CC BY 3.0，必须写明作品、作者、许可证和来源）
-    CREDITS.forEach((line, i) => {
+    CREDITS.forEach((str, i) => {
       let size = 8.6;
       c.font = font(size, { bold: false });
-      const wid = c.measureText(line).width;
-      if (wid > DW - 36) size *= (DW - 36) / wid;
-      text(c, line, DW / 2, by + 99 + i * 12.5, size, { align: 'center', bold: false, color: 'rgba(255,255,255,0.5)', shadow: false });
+      const wid = c.measureText(str).width;
+      if (wid > iw) size *= iw / wid;
+      text(c, str, lx, cy0 + 386 + i * 12.5, size, { bold: false, color: 'rgba(255,255,255,0.45)', shadow: false });
     });
+
+    this._button(c, 'back', '知 道 了', lx, cy0 + ch - 74, iw, 50, true);
     L.end();
   }
 

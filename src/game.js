@@ -158,6 +158,7 @@ export class Game {
   refreshScreen() {
     if (this.state === 'title') {
       if (this.hud.screenMode === 'board') this.hud.showLeaderboard();
+      else if (this.hud.screenMode === 'help') this.hud.showHelp();
       else this.hud.showTitle(this.best, this.assets);
     } else if (this.paused) this.hud.showPause();
     else if (this.result && (this.state === 'finished' || this.state === 'failed') && this.endTimer <= 0) this.hud.showResult(this.result);
@@ -189,8 +190,8 @@ export class Game {
         this.assets = 'error';
       })
       .then(() => {
-        // 正在看好友榜就不打断，返回首页时再按最新的加载状态画
-        if (this.state === 'title' && this.hud.screenMode !== 'board') this.hud.showTitle(this.best, this.assets);
+        // 正在看好友榜或玩法说明就不打断，返回首页时再按最新的加载状态画
+        if (this.state === 'title' && this.hud.screenMode === 'title') this.hud.showTitle(this.best, this.assets);
       });
   }
 
@@ -430,7 +431,7 @@ export class Game {
     else if (name === 'pause') {
       if (this.state === 'running' || this.state === 'countdown') this.togglePause();
     } else if (name === 'confirm') {
-      if (this.hud.screenMode === 'board') this.press('back');
+      if (this.hud.screenMode === 'board' || this.hud.screenMode === 'help') this.press('back');
       else if (this.state === 'title') this.press(this.assets === 'error' ? 'retry' : 'start');
       else if (this.paused) this.press('resume');
       else if (this.hud.screenMode === 'result') this.press('restart');
@@ -470,6 +471,10 @@ export class Game {
       case 'board':
         // 首页的"本周好友榜"
         if (this.state === 'title') this.hud.showLeaderboard();
+        break;
+      case 'help':
+        // 首页的"玩法说明"
+        if (this.state === 'title') this.hud.showHelp();
         break;
       case 'back':
         if (this.state === 'title') this.hud.showTitle(this.best, this.assets);
