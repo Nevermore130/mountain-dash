@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { mainCanvas, getScreen, getBenchmarkLevel, WX, G, raf, options, setupShareMenu } from './platform.js';
 import { shareInfo } from './social.js';
+import { initRewardedAd } from './ads.js';
 import { Game } from './game.js';
 
 // 画质档位：帧率不够时逐级下调
@@ -94,6 +95,8 @@ function boot() {
   } catch (e) {}
   // 右上角菜单的转发：文案里带上自己本周的成绩
   setupShareMenu(shareInfo);
+  // 提前创建激励视频广告，玩家体力值用完时点一下就能播
+  initRewardedAd();
 
   // 帧率统计，用于自适应画质
   let accT = 0;

@@ -2,9 +2,10 @@
 // 所有布局都在"设计坐标"里完成：宽度固定 390，纵向按屏幕比例延伸
 import * as THREE from 'three';
 import { createCanvas, getSharedCanvas } from './platform.js';
-import { STAGES, RACE_LENGTH, ACTIVE_RIVALS, PLAYER } from './config.js';
+import { STAGES, RACE_LENGTH, ACTIVE_RIVALS, PLAYER, ENERGY } from './config.js';
 import { formatTime, formatPace } from './format.js';
 import { showFriendBoard, hideFriendBoard, weekBest } from './social.js';
+import { energyInfo } from './energy.js';
 
 const DW = 390;
 const ORANGE = '#ff6a13';
@@ -764,7 +765,8 @@ export class Hud {
 
   // ---------------- 全屏界面 ----------------
 
-  _button(c, id, label, x, y, w, h, primary) {
+  // sub：主按钮里的第二行小字（可选）
+  _button(c, id, label, x, y, w, h, primary, sub = '') {
     if (primary) {
       const g = c.createLinearGradient(0, y, 0, y + h);
       g.addColorStop(0, '#ff8a2b');
@@ -772,7 +774,8 @@ export class Hud {
       c.fillStyle = g;
       rrect(c, x, y, w, h, h / 2);
       c.fill();
-      text(c, label, x + w / 2, y + h / 2 + 0.5, 19, { align: 'center', italic: true, color: '#fff', shadowColor: 'rgba(120,40,0,0.5)' });
+      text(c, label, x + w / 2, y + h / 2 + (sub ? -7.5 : 0.5), 19, { align: 'center', italic: true, color: '#fff', shadowColor: 'rgba(120,40,0,0.5)' });
+      if (sub) text(c, sub, x + w / 2, y + h / 2 + 13.5, 10.5, { align: 'center', bold: false, color: 'rgba(255,255,255,0.9)', shadow: false });
     } else {
       c.fillStyle = 'rgba(18,20,23,0.7)';
       rrect(c, x, y, w, h, h / 2);
@@ -783,6 +786,14 @@ export class Hud {
       text(c, label, x + w / 2, y + h / 2 + 0.5, 15, { align: 'center', color: '#fff', shadow: false });
     }
     this.buttons.push({ id, x, y, w, h });
+  }
+
+  // "开始比赛 / 再跑一次"的主按钮：按钮里写着今天还剩几点体力值；用完了就换成"看视频"
+  _playButton(c, id, label, x, y, w, h) {
+    const e = energyInfo();
+    if (!e.enabled) this._button(c, id, label, x, y, w, h, true);
+    else if (e.left > 0) this._button(c, id, label, x, y, w, h, true, e.left > e.max ? `体力值 ${e.left}` : `今日体力值 ${e.left}/${e.max}`);
+    else this._button(c, id, '看视频 · 再跑一局', x, y, w, h, true, '今日体力值已用完');
   }
 
   hideScreen() {
@@ -858,7 +869,7 @@ export class Hud {
 
     let hint = '左右滑动变道 · 上滑跳跃 · 下滑滑铲';
     if (status === 'ready') {
-      this._button(c, 'start', '开 始 比 赛', bx, by, bw, 58, true);
+      this._playButton(c, 'start', '开 始 比 赛', bx, by, bw, 58);
     } else if (status === 'error') {
       this._button(c, 'retry', '加载失败 · 点击重试', bx, by, bw, 58, false);
       hint = '人物素材没有加载成功，请检查后重试';
@@ -915,8 +926,10 @@ export class Hud {
     c.fillStyle = 'rgba(8,10,12,0.66)';
     c.fillRect(0, 0, DW, this.Hd);
 
+    const rules = ['每一局的障碍和补给都会重新随机排布', '体力耗尽即退赛，每周最好的一次成绩计入好友榜'];
+    if (ENERGY.enabled) rules.push(`每局消耗 1 点体力值，每天 ${ENERGY.dailyFree} 点，用完可看视频再跑`);
     const cw = 334;
-    const ch = 506;
+    const ch = 468 + rules.length * 19;
     const { cx0, cy0 } = this._card(c, cw, ch);
     const lx = cx0 + 24;
     const iw = cw - 48;
@@ -964,8 +977,7 @@ export class Hud {
       text(c, b, lx + 76, y, 12, { bold: false, color: 'rgba(255,255,255,0.85)', shadow: false });
     });
     line(cy0 + 316);
-    text(c, '每一局的障碍和补给都会重新随机排布', lx, cy0 + 336, 11.5, { bold: false, color: dim, shadow: false });
-    text(c, '体力耗尽即退赛，每周最好的一次成绩计入好友榜', lx, cy0 + 355, 11.5, { bold: false, color: dim, shadow: false });
+    rules.forEach((str, i) => text(c, str, lx, cy0 + 336 + i * 19, 11.5, { bold: false, color: dim, shadow: false }));
 
     // 素材署名（帽子是 CC BY 3.0，必须写明作品、作者、许可证和来源）
     CREDITS.forEach((str, i) => {
@@ -973,7 +985,7 @@ export class Hud {
       c.font = font(size, { bold: false });
       const wid = c.measureText(str).width;
       if (wid > iw) size *= iw / wid;
-      text(c, str, lx, cy0 + 386 + i * 12.5, size, { bold: false, color: 'rgba(255,255,255,0.45)', shadow: false });
+      text(c, str, lx, cy0 + 348 + rules.length * 19 + i * 12.5, size, { bold: false, color: 'rgba(255,255,255,0.45)', shadow: false });
     });
 
     this._button(c, 'back', '知 道 了', lx, cy0 + ch - 74, iw, 50, true);
@@ -994,7 +1006,10 @@ export class Hud {
     text(c, '已暂停', DW / 2, cy - 30, 44, { align: 'center', italic: true });
     text(c, '喘口气，山还在那里', DW / 2, cy + 16, 13, { align: 'center', bold: false, color: 'rgba(255,255,255,0.8)' });
     this._button(c, 'resume', '继 续 比 赛', 65, cy + 60, 260, 54, true);
-    this._button(c, 'restart', '重新开始', 65, cy + 130, 260, 46, false);
+    // 重新开始等于再开一局，也要消耗体力值
+    const e = energyInfo();
+    const again = !e.enabled ? '重新开始' : e.left > 0 ? '重新开始 · 消耗 1 体力值' : '看视频 · 重新开始';
+    this._button(c, 'restart', again, 65, cy + 130, 260, 46, false);
     this._button(c, 'home', '返回首页', 65, cy + 190, 260, 46, false);
     L.end();
   }
@@ -1138,7 +1153,7 @@ export class Hud {
     if (!ranked) {
       this._placeBoard(c, lx, py0, cw - 48, 182);
       const half = (cw - 48 - 10) / 2;
-      this._button(c, 'restart', '再 跑 一 次', lx, byy, cw - 48, 52, true);
+      this._playButton(c, 'restart', '再 跑 一 次', lx, byy, cw - 48, 52);
       this._button(c, 'share', '邀请好友来比', lx, byy + 62, half, 42, false);
       this._button(c, 'home', '返回首页', lx + half + 10, byy + 62, half, 42, false);
       L.end();
@@ -1161,7 +1176,7 @@ export class Hud {
     });
 
     this._hideBoard();
-    this._button(c, 'restart', '再 跑 一 次', cx0 + 24, byy, cw - 48, 52, true);
+    this._playButton(c, 'restart', '再 跑 一 次', cx0 + 24, byy, cw - 48, 52);
     this._button(c, 'home', '返回首页', cx0 + 24, byy + 62, cw - 48, 42, false);
     L.end();
   }

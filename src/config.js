@@ -190,6 +190,19 @@ export const RIVALS = [
 export const RIVALS_ENABLED = false;
 export const ACTIVE_RIVALS = RIVALS_ENABLED ? RIVALS : [];
 
+// 体力值：每开一局比赛消耗 1 点，每天 0 点（北京时间）恢复；用完后看一段激励视频广告临时加一点。
+// 注意它和比赛里的"体力"（跑步时的体力条）是两回事
+export const ENERGY = {
+  enabled: true, // 关掉就不限制每天能跑几局
+  dailyFree: 2, // 每天免费的体力值
+  adReward: 1, // 看完一次广告临时增加多少（只在当天有效）
+  // 激励视频广告位 ID（形如 adunit-xxxxxxxxxxxxxxxx）：小游戏后台「流量主 → 广告管理」里新建"激励视频"广告位后填到这里
+  adUnitId: '',
+  // 广告放不出来时（广告位还没配置、当前没有可投放的广告、微信版本太低等）怎么办：
+  // true = 不为难玩家，直接送这一次；false = 提示稍后再试，这一局开不了
+  freeOnAdError: true,
+};
+
 // 补给站：每个赛段开头不远处一个，三条跑线各放一样补给，只能拿一样
 export const AID_STATIONS = STAGES.slice(1).map((st) => st.from + 70);
 

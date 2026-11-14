@@ -64,6 +64,28 @@ export function vibrate(heavy) {
   } catch (e) {}
 }
 
+// ---------------- 系统提示 ----------------
+
+// 微信自带的轻提示，显示在游戏画面之上（不带图标时最多两行字）
+export function showTip(title) {
+  try {
+    WX.showToast({ title, icon: 'none', duration: 2200 });
+  } catch (e) {}
+}
+
+// 带遮罩的加载提示：显示期间点不到游戏里的按钮，防止连点
+export function showLoading(title) {
+  try {
+    WX.showLoading({ title, mask: true });
+  } catch (e) {}
+}
+
+export function hideLoading() {
+  try {
+    WX.hideLoading();
+  } catch (e) {}
+}
+
 // ---------------- 开放数据域（微信好友排行榜） ----------------
 // 好友的头像、昵称、成绩只有开放数据域拿得到：主域只管发消息，再把它画好的 sharedCanvas 贴到画面上
 

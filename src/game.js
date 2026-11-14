@@ -1,6 +1,6 @@
 // 游戏主体：场景搭建、状态机、玩家与对手逻辑、跟拍相机
 import * as THREE from 'three';
-import { ACTIVE_RIVALS, AID_STATIONS, LANE_W, PLAYER, PLAYER_MODEL, RACE_LENGTH, STAGES, clamp, lerp, stageBlend, stageIndexAt } from './config.js';
+import { ACTIVE_RIVALS, AID_STATIONS, ENERGY, LANE_W, PLAYER, PLAYER_MODEL, RACE_LENGTH, STAGES, clamp, lerp, stageBlend, stageIndexAt } from './config.js';
 import { cx, py, grade, heading } from './track.js';
 import { Terrain } from './terrain.js';
 import { Environment } from './sky.js';
@@ -11,8 +11,10 @@ import { Input } from './input.js';
 import { Audio } from './audio.js';
 import { Dust } from './particles.js';
 import { getPropAssets } from './props.js';
-import { createCanvas, loadData, saveData, vibrate, options, openFriendSetting } from './platform.js';
+import { createCanvas, loadData, saveData, vibrate, options, openFriendSetting, showTip } from './platform.js';
 import { submitRace, weekBest, inviteFriends } from './social.js';
+import { useEnergy, addBonusEnergy } from './energy.js';
+import { showRewardedAd, onAdVisible } from './ads.js';
 
 const CAM_BACK = 5.8;
 const CAM_UP = 2.75;
@@ -105,6 +107,8 @@ export class Game {
 
     this.hud = new Hud(screen);
     this.audio = new Audio();
+    // 广告盖住游戏时和切到后台一样处理：比赛暂停、声音停掉；关掉广告后恢复
+    onAdVisible((visible) => (visible ? this.onHide() : this.onShow()));
     this.input = new Input();
     this.input.onSwipe = (dir) => this.onSwipe(dir);
     this.input.onDrag = (k) => this.onDrag(k);
@@ -265,6 +269,31 @@ export class Game {
     this.hud.showTitle(this.best, this.assets);
   }
 
+  // 开一局比赛：消耗 1 点体力值；体力值用完了就先看一段激励视频，看完临时加一点再开
+  tryStart() {
+    // 调试用的自动驾驶不占体力值
+    if (this.autopilot || useEnergy()) {
+      this.startCountdown();
+      return;
+    }
+    showRewardedAd((result) => {
+      if (result === 'skipped') {
+        showTip('完整看完视频才能再跑一局');
+        return;
+      }
+      if (result === 'unavailable') {
+        if (!ENERGY.freeOnAdError) {
+          showTip('暂时没有可以播放的视频，请稍后再试');
+          return;
+        }
+        showTip('视频暂时放不出来，这一局免费送你');
+      }
+      addBonusEnergy();
+      if (useEnergy()) this.startCountdown();
+      else this.refreshScreen();
+    });
+  }
+
   startCountdown() {
     this.audio.unlock();
     this.resetRace();
@@ -304,6 +333,8 @@ export class Game {
 
   onShow() {
     if (!this.paused) this.audio.resume();
+    // 切回来时可能已经过了 0 点，首页上的体力值和本周成绩重新画一遍
+    if (this.state === 'title' && this.hud.screenMode === 'title') this.hud.showTitle(this.best, this.assets);
   }
 
   finishRace() {
@@ -443,7 +474,7 @@ export class Game {
       case 'start':
       case 'restart':
         // 人物还没加载完不能开始
-        if (this.assets === 'ready') this.startCountdown();
+        if (this.assets === 'ready') this.tryStart();
         break;
       case 'retry':
         if (this.assets === 'error') this.loadRunners();

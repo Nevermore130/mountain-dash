@@ -190,7 +190,111 @@
       window.__shared = info;
       console.log('[预览] 转发给好友：', info.title, info.query || '');
     },
+
+    // ---- 系统提示（模拟）----
+    showToast({ title, duration = 1500 }) {
+      tipBox.textContent = title;
+      tipBox.style.display = 'block';
+      clearTimeout(tipTimer);
+      tipTimer = setTimeout(() => (tipBox.style.display = 'none'), duration);
+      window.__tips.push(title);
+    },
+    showLoading({ title }) {
+      clearTimeout(tipTimer);
+      tipBox.textContent = title + '…';
+      tipBox.style.display = 'block';
+      mask.style.display = 'block';
+    },
+    hideLoading() {
+      tipBox.style.display = 'none';
+      mask.style.display = 'none';
+    },
+
+    // ---- 激励视频广告（模拟）----
+    // 预览地址可以加参数：ad=fail 拉不到广告；ad=slow 拉取很慢；ad=none 当作没配置广告位
+    createRewardedVideoAd() {
+      const on = { load: [], error: [], close: [] };
+      const mode = opts.ad;
+      const load = () =>
+        new Promise((resolve, reject) => {
+          setTimeout(
+            () => {
+              if (mode === 'fail') {
+                const err = { errCode: 1004, errMsg: 'no advertisement' };
+                on.error.forEach((cb) => cb(err));
+                reject(err);
+              } else {
+                on.load.forEach((cb) => cb());
+                resolve();
+              }
+            },
+            mode === 'slow' ? 2500 : 200
+          );
+        });
+      let ready = false;
+      load().then(
+        () => (ready = true),
+        () => {}
+      );
+      const close = (isEnded) => {
+        adBox.style.display = 'none';
+        clearInterval(adTimer);
+        ready = false;
+        on.close.forEach((cb) => cb({ isEnded }));
+        // 真实的广告组件关闭后也会自动拉取下一条
+        load().then(
+          () => (ready = true),
+          () => {}
+        );
+      };
+      window.__ad = { close, visible: () => adBox.style.display !== 'none' };
+      return {
+        onLoad: (cb) => on.load.push(cb),
+        onError: (cb) => on.error.push(cb),
+        onClose: (cb) => on.close.push(cb),
+        load,
+        show() {
+          if (!ready) return Promise.reject({ errCode: 1004, errMsg: 'ad not ready' });
+          let left = 5;
+          const paint = () => {
+            adBox.innerHTML =
+              '<div style="font-size:13px;opacity:.6">预览 · 模拟激励视频广告</div>' +
+              `<div style="font-size:44px;font-weight:700;margin:18px 0">${left > 0 ? left : '✓'}</div>` +
+              `<div style="font-size:14px;margin-bottom:22px">${left > 0 ? '看完才能获得奖励' : '已看完，可以关闭领取奖励'}</div>` +
+              `<button id="__adClose" style="font-size:15px;padding:10px 26px;border-radius:22px;border:0;background:#ff6a13;color:#fff">${left > 0 ? '关闭（不看了）' : '关闭并领取'}</button>`;
+            adBox.querySelector('#__adClose').onclick = () => close(left <= 0);
+          };
+          adBox.style.display = 'flex';
+          paint();
+          clearInterval(adTimer);
+          adTimer = setInterval(() => {
+            left -= 1;
+            paint();
+            if (left <= 0) clearInterval(adTimer);
+          }, 1000);
+          return Promise.resolve();
+        },
+      };
+    },
   };
+
+  // 提示、加载遮罩和模拟广告用的几个浮层，都盖在画布上面
+  const layer = (css) => {
+    const el = document.createElement('div');
+    el.style.cssText = 'position:absolute;display:none;z-index:10;font-family:-apple-system,"PingFang SC",sans-serif;color:#fff;' + css;
+    // 浮层上的点击不要传到游戏里
+    ['mousedown', 'touchstart', 'touchend'].forEach((t) => el.addEventListener(t, (e) => e.stopPropagation()));
+    stage.appendChild(el);
+    return el;
+  };
+  const mask = layer('inset:0;');
+  const tipBox = layer('left:50%;top:46%;transform:translate(-50%,-50%);max-width:70%;padding:12px 18px;border-radius:8px;background:rgba(0,0,0,.78);font-size:14px;line-height:1.5;text-align:center;pointer-events:none;z-index:12;');
+  const adBox = layer('inset:0;background:#111;flex-direction:column;align-items:center;justify-content:center;z-index:11;');
+  let tipTimer = 0;
+  let adTimer = 0;
+  window.__tips = [];
+  // 没有真实广告位：给游戏一个假的广告位 ID，让"看视频"走上面的模拟广告
+  if (opts.ad !== 'none' && !opts.adUnitId) opts.adUnitId = 'adunit-preview';
 
   // ---------------- 开放数据域（模拟） ----------------
   // 把 minigame/openDataContext/index.js 原样放进一个只看得到假 wx 的函数里跑；好友数据是下面编的。
